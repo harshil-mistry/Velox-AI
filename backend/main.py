@@ -73,11 +73,68 @@ class SilenceManager:
                     return full_text.strip()
         return None
 
-async def run_llm_and_tts(text: str, websocket: WebSocket):
-    """Pipeline: Text -> Groq (Stream) -> Sentence Buffer -> TTS (Stream) -> WebSocket"""
-    logger.info(f"Processing: {text}")
+# ... (Previous imports)
+import subprocess
+
+# ... (Previous constants)
+TTS_RATE_DEEPGRAM = 24000
+TTS_RATE_PIPER = 22050
+
+# Piper Configuration (Hardcoded for Demo)
+PIPER_PATH = r"d:\piper\piper.exe"
+PIPER_MODEL_PATH = r"d:\piper\en_US-hfc_female-medium.onnx"
+
+# ... (Shared Logic SilenceManager - Unchanged)
+
+async def run_piper_tts(text: str, websocket: WebSocket):
+    """Streams text to Piper binary and audio to WebSocket."""
+    if not text.strip(): return
     
-    # Notify Client: AI is Thinking
+    # Notify Client: AI is Speaking (Text)
+    await websocket.send_json({"type": "transcript", "role": "assistant", "content": text})
+
+    command = [
+        PIPER_PATH,
+        "--model", PIPER_MODEL_PATH,
+        "--output-raw",
+    ]
+
+    try:
+        # Create subprocess
+        process = await asyncio.create_subprocess_exec(
+            *command,
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
+        )
+
+        # Write text to stdin
+        if process.stdin:
+            process.stdin.write(text.encode('utf-8'))
+            await process.stdin.drain()
+            process.stdin.close()
+
+        # Read stdout stream
+        while True:
+            chunk = await process.stdout.read(1024)
+            if not chunk:
+                break
+            await websocket.send_bytes(chunk)
+
+        await process.wait()
+        
+        if process.returncode != 0:
+            err = await process.stderr.read()
+            logger.error(f"Piper Error: {err.decode()}")
+
+    except Exception as e:
+        logger.error(f"Piper Exception: {e}")
+
+
+async def run_llm_and_tts(text: str, websocket: WebSocket, tts_provider: str):
+    """Pipeline: Text -> Groq (Stream) -> Sentence Buffer -> TTS (Stream) -> WebSocket"""
+    logger.info(f"Processing: {text} [TTS: {tts_provider}]")
+    
     await websocket.send_json({"type": "status", "content": "thinking"})
 
     groq = Groq(api_key=GROQ_API_KEY)
@@ -88,7 +145,6 @@ async def run_llm_and_tts(text: str, websocket: WebSocket):
     ]
 
     try:
-        # Groq Streaming
         stream = groq.chat.completions.create(
             messages=messages,
             model="llama-3.1-8b-instant",
@@ -101,29 +157,27 @@ async def run_llm_and_tts(text: str, websocket: WebSocket):
         async def speak(text_chunk):
             if not text_chunk.strip(): return
             
-            # Notify Client: AI is Speaking (Text)
-            await websocket.send_json({"type": "transcript", "role": "assistant", "content": text_chunk})
+            if tts_provider == "piper":
+                await run_piper_tts(text_chunk, websocket)
+            else:
+                # Deepgram Logic
+                await websocket.send_json({"type": "transcript", "role": "assistant", "content": text_chunk})
+                
+                url = f"https://api.deepgram.com/v1/speak?model=aura-asteria-en&encoding=linear16&sample_rate={TTS_RATE_DEEPGRAM}&container=none"
+                headers = {"Authorization": f"Token {DEEPGRAM_API_KEY}", "Content-Type": "application/json"}
+                payload = {"text": text_chunk}
 
-            # Deepgram Aura TTS (Raw Streaming)
-            url = f"https://api.deepgram.com/v1/speak?model=aura-asteria-en&encoding=linear16&sample_rate={TTS_RATE}&container=none"
-            headers = {"Authorization": f"Token {DEEPGRAM_API_KEY}", "Content-Type": "application/json"}
-            payload = {"text": text_chunk}
-
-            # We need to stream the TTS bytes to the WebSocket
-            # Using aiohttp for fully async streaming
-            try:
-                async with aiohttp.ClientSession() as session:
-                    async with session.post(url, headers=headers, json=payload) as response:
-                        if response.status == 200:
-                            async for chunk in response.content.iter_chunked(1024):
-                                if chunk: 
-                                    await websocket.send_bytes(chunk)
-                        else:
-                            error_text = await response.text()
-                            logger.error(f"TTS Error: {error_text}")
-
-            except Exception as e:
-                logger.error(f"TTS Exception: {e}")
+                try:
+                    async with aiohttp.ClientSession() as session:
+                        async with session.post(url, headers=headers, json=payload) as response:
+                            if response.status == 200:
+                                async for chunk in response.content.iter_chunked(1024):
+                                    if chunk: 
+                                        await websocket.send_bytes(chunk)
+                            else:
+                                logger.error(f"TTS Error: {await response.text()}")
+                except Exception as e:
+                    logger.error(f"TTS Exception: {e}")
 
         for chunk in stream:
             token = chunk.choices[0].delta.content
@@ -143,19 +197,16 @@ async def run_llm_and_tts(text: str, websocket: WebSocket):
         await websocket.send_json({"type": "error", "content": str(e)})
 
 
-# --- Security ---
-
+# --- Security --- (Unchanged)
 def verify_token(token: str):
-    """Simulated verification check."""
-    # In production, check DB or JWT
     if token == "velox-secret-123":
         return True
-    return True # For now return True as requested, but log it
+    return True 
 
 # --- WebSocket Endpoint ---
 
 @app.websocket("/ws/stream")
-async def audio_stream(websocket: WebSocket, token: str = Query(None)):
+async def audio_stream(websocket: WebSocket, token: str = Query(None), tts_provider: str = Query("deepgram")):
     # 1. Verification
     if not verify_token(token):
         logger.warning(f"Unauthorized connection attempt with token: {token}")
@@ -163,11 +214,16 @@ async def audio_stream(websocket: WebSocket, token: str = Query(None)):
         return
 
     await websocket.accept()
-    logger.info("Client connected")
+    logger.info(f"Client connected [TTS: {tts_provider}]")
+
+    # 2. Send Configuration to Client
+    # Tell frontend which sample rate to use for playback
+    sample_rate = TTS_RATE_PIPER if tts_provider == "piper" else TTS_RATE_DEEPGRAM
+    await websocket.send_json({"type": "config", "sample_rate": sample_rate})
 
     silence_manager = SilenceManager()
     
-    # 2. Setup Deepgram STT
+    # 3. Setup Deepgram STT
     try:
         config = DeepgramClientOptions(options={"keepalive": "true"})
         deepgram = DeepgramClient(DEEPGRAM_API_KEY, config)
@@ -182,7 +238,6 @@ async def audio_stream(websocket: WebSocket, token: str = Query(None)):
             if result.is_final:
                 logger.info(f"User: {sentence}")
                 silence_manager.add_text(sentence)
-                # Send live transcript to UI
                 await websocket.send_json({"type": "transcript", "role": "user", "content": sentence})
 
         dg_connection.on(LiveTranscriptionEvents.Transcript, on_message)
@@ -202,14 +257,13 @@ async def audio_stream(websocket: WebSocket, token: str = Query(None)):
             await websocket.close()
             return
 
-        # 3. Main Loop
-        # We need a concurrent task to check for silence while receiving audio
+        # 4. Main Loop
         async def silence_checker():
             while True:
-                await asyncio.sleep(0.1) # Check every 100ms
+                await asyncio.sleep(0.1)
                 text = silence_manager.get_if_silence()
                 if text:
-                     await run_llm_and_tts(text, websocket)
+                     await run_llm_and_tts(text, websocket, tts_provider)
 
         checker_task = asyncio.create_task(silence_checker())
 
@@ -218,10 +272,9 @@ async def audio_stream(websocket: WebSocket, token: str = Query(None)):
                 # Receive Audio from Client
                 try:
                     data = await asyncio.wait_for(websocket.receive_bytes(), timeout=0.1)
-                    # Send to Deepgram
                     await dg_connection.send(data)
                 except asyncio.TimeoutError:
-                    continue # Check loop again
+                    continue 
         
         except WebSocketDisconnect:
             logger.info("Client disconnected")

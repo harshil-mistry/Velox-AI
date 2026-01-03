@@ -4,9 +4,12 @@ import { useVoiceAgent } from '@/hooks/useVoiceAgent';
 import { useState, useEffect, useRef } from 'react';
 
 export default function Home() {
+  const [ttsProvider, setTtsProvider] = useState<'deepgram' | 'piper'>('deepgram');
+
   const { status, isSpeaking, transcript, connect, disconnect } = useVoiceAgent(
     'ws://localhost:8000/ws/stream',
-    'velox-secret-123'
+    'velox-secret-123',
+    ttsProvider
   );
 
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -31,6 +34,21 @@ export default function Home() {
       </div>
 
       <div className="relative flex flex-col items-center justify-center py-10">
+
+        {/* TTS Selector */}
+        <div className="absolute top-0 right-0 p-4">
+          <label className="block text-xs font-bold text-gray-400 mb-1">TTS Provider</label>
+          <select
+            disabled={status === 'connected'}
+            value={ttsProvider}
+            onChange={(e) => setTtsProvider(e.target.value as 'deepgram' | 'piper')}
+            className="bg-gray-800 border border-gray-600 rounded px-2 py-1 text-sm text-white focus:outline-none focus:border-blue-500 disabled:opacity-50"
+          >
+            <option value="deepgram">Deepgram Aura (Cloud)</option>
+            <option value="piper">Piper (Local)</option>
+          </select>
+        </div>
+
         <div className={`w-32 h-32 rounded-full flex items-center justify-center transition-all duration-300 ${isSpeaking ? 'bg-green-500 animate-pulse scale-110' : 'bg-gray-700'}`}>
           {isSpeaking ? '🗣️' : '👂'}
         </div>

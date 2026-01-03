@@ -1,11 +1,13 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 
-const SAMPLE_RATE = 16000;
-
-export function useVoiceAgent(serverUrl: string, token: string) {
+export function useVoiceAgent(serverUrl: string, token: string, ttsProvider: 'deepgram' | 'piper') {
     const [status, setStatus] = useState<'idle' | 'connecting' | 'connected' | 'error'>('idle');
     const [isSpeaking, setIsSpeaking] = useState(false);
     const [transcript, setTranscript] = useState<{ role: 'user' | 'assistant', content: string }[]>([]);
+
+    // Playback state
+    const [sampleRate, setSampleRate] = useState(24000); // Default, updated by server
+    const sampleRateRef = useRef(24000);
 
     const wsRef = useRef<WebSocket | null>(null);
     const audioContextRef = useRef<AudioContext | null>(null);
@@ -14,20 +16,22 @@ export function useVoiceAgent(serverUrl: string, token: string) {
 
     // Audio Queue for playback
     const audioQueueRef = useRef<Float32Array[]>([]);
-    const isPlayingRef = useRef(false);
     const nextStartTimeRef = useRef(0);
+
+    // Keep ttsProvider up to date in the connect callback
+    // Ideally, changing ttsProvider should trigger disconnect -> reconnect or just be passed to connect
 
     const connect = useCallback(async () => {
         setStatus('connecting');
 
         try {
             // 1. WebSocket
-            const ws = new WebSocket(`${serverUrl}?token=${token}`);
+            const ws = new WebSocket(`${serverUrl}?token=${token}&tts_provider=${ttsProvider}`);
             ws.binaryType = 'arraybuffer';
 
             ws.onopen = () => {
                 setStatus('connected');
-                console.log('WS Connected');
+                console.log(`WS Connected [TTS: ${ttsProvider}]`);
             };
 
             ws.onmessage = async (event) => {
@@ -37,7 +41,7 @@ export function useVoiceAgent(serverUrl: string, token: string) {
                     // Audio Data (PCM16)
                     handleIncomingAudio(data);
                 } else {
-                    // Text Data (JSON)
+                    // Text/Config Data (JSON)
                     try {
                         const json = JSON.parse(data);
                         if (json.type === 'transcript') {
@@ -45,6 +49,13 @@ export function useVoiceAgent(serverUrl: string, token: string) {
                         } else if (json.type === 'status') {
                             if (json.content === 'thinking') setIsSpeaking(true);
                             if (json.content === 'listening') setIsSpeaking(false);
+                        } else if (json.type === 'config') {
+                            // Server tells us the sample rate
+                            if (json.sample_rate) {
+                                console.log(`Configuring Playback Rate: ${json.sample_rate}`);
+                                setSampleRate(json.sample_rate);
+                                sampleRateRef.current = json.sample_rate;
+                            }
                         }
                     } catch (e) {
                         console.error("JSON Parse error", e);
@@ -67,34 +78,28 @@ export function useVoiceAgent(serverUrl: string, token: string) {
             const stream = await navigator.mediaDevices.getUserMedia({
                 audio: {
                     channelCount: 1,
-                    sampleRate: 16000, // Try to request 16k
+                    sampleRate: 16000,
                     echoCancellation: true,
                     noiseSuppression: true,
                     autoGainControl: true
                 }
             });
 
-            const ctx = new AudioContext({ sampleRate: 16000 }); // Force 16k context if supported
+            const ctx = new AudioContext({ sampleRate: 16000 });
             await ctx.audioWorklet.addModule('/audio-processor.js');
 
             const source = ctx.createMediaStreamSource(stream);
             const worklet = new AudioWorkletNode(ctx, 'audio-processor');
 
             worklet.port.onmessage = (e) => {
-                // Incoming raw Float32 (usually 44100/48000 depending on Hardware, checking ctx.sampleRate)
                 const inputData = e.data as Float32Array;
-
-                // Convert Float32 -> Int16
                 const pcm16 = float32ToInt16(inputData);
-
-                // Send to WS
                 if (ws.readyState === WebSocket.OPEN) {
                     ws.send(pcm16);
                 }
             };
 
             source.connect(worklet);
-            // worklet.connect(ctx.destination); // Don't connect mic to speakers! (Feedback)
 
             audioContextRef.current = ctx;
             sourceNodeRef.current = source;
@@ -104,7 +109,7 @@ export function useVoiceAgent(serverUrl: string, token: string) {
             console.error(e);
             setStatus('error');
         }
-    }, [serverUrl, token]);
+    }, [serverUrl, token, ttsProvider]); // Re-create if provider changes
 
     const disconnect = useCallback(() => {
         wsRef.current?.close();
@@ -114,11 +119,9 @@ export function useVoiceAgent(serverUrl: string, token: string) {
 
     // Playback Logic
     const handleIncomingAudio = (arrayBuffer: ArrayBuffer) => {
-        // Raw Linear16 PCM
         const int16Data = new Int16Array(arrayBuffer);
         const float32Data = new Float32Array(int16Data.length);
 
-        // Convert Int16 -> Float32
         for (let i = 0; i < int16Data.length; i++) {
             float32Data[i] = int16Data[i] / 32768.0;
         }
@@ -133,14 +136,23 @@ export function useVoiceAgent(serverUrl: string, token: string) {
         const ctx = audioContextRef.current;
         const chunk = audioQueueRef.current.shift()!;
 
-        const audioBuffer = ctx.createBuffer(1, chunk.length, 24000); // TTS is 24k
+        // Use state 'sampleRate' OR access it via a ref if state isn't updating fast enough within callback
+        // Since schedule functions runs often, using current state might be tricky if it changes mid-stream?
+        // Actually, config comes at start. So it should be fine. 
+        // NOTE: We need to ensure we use the 'latest' sampleRate.
+        // But inside this closure, sampleRate might be stale if not careful.
+        // Let's rely on the server validation. Ideally, we should use a Ref for sampleRate.
+
+        // Ref-based access for safety
+        // But for React simplicity here, we assume user won't change it mid-call (must disconnect first).
+
+        const audioBuffer = ctx.createBuffer(1, chunk.length, sampleRateRef.current); // Dynamic Rate via Ref
         audioBuffer.getChannelData(0).set(chunk);
 
         const source = ctx.createBufferSource();
         source.buffer = audioBuffer;
         source.connect(ctx.destination);
 
-        // Schedule
         let startTime = nextStartTimeRef.current;
         if (startTime < ctx.currentTime) startTime = ctx.currentTime;
 
