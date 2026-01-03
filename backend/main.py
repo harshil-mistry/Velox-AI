@@ -7,7 +7,8 @@ import json
 import logging
 import threading
 import time
-import requests
+import time
+import aiohttp
 from dotenv import load_dotenv
 
 from deepgram import (
@@ -109,16 +110,18 @@ async def run_llm_and_tts(text: str, websocket: WebSocket):
             payload = {"text": text_chunk}
 
             # We need to stream the TTS bytes to the WebSocket
-            # Since requests is synchronous, we run it in a thread executor or just block for short bursts
-            # For high-load, we should use aiohttp. For now, we block briefly.
+            # Using aiohttp for fully async streaming
             try:
-                with requests.post(url, headers=headers, json=payload, stream=True) as response:
-                    if response.status_code == 200:
-                        for chunk in response.iter_content(chunk_size=1024):
-                            if chunk: 
-                                await websocket.send_bytes(chunk)
-                    else:
-                        logger.error(f"TTS Error: {response.text}")
+                async with aiohttp.ClientSession() as session:
+                    async with session.post(url, headers=headers, json=payload) as response:
+                        if response.status == 200:
+                            async for chunk in response.content.iter_chunked(1024):
+                                if chunk: 
+                                    await websocket.send_bytes(chunk)
+                        else:
+                            error_text = await response.text()
+                            logger.error(f"TTS Error: {error_text}")
+
             except Exception as e:
                 logger.error(f"TTS Exception: {e}")
 
@@ -166,7 +169,8 @@ async def audio_stream(websocket: WebSocket, token: str = Query(None)):
     
     # 2. Setup Deepgram STT
     try:
-        deepgram = DeepgramClient(DEEPGRAM_API_KEY)
+        config = DeepgramClientOptions(options={"keepalive": "true"})
+        deepgram = DeepgramClient(DEEPGRAM_API_KEY, config)
         dg_connection = deepgram.listen.asyncwebsocket.v("1")
 
         async def on_message(self, result, **kwargs):
@@ -212,9 +216,12 @@ async def audio_stream(websocket: WebSocket, token: str = Query(None)):
         try:
             while True:
                 # Receive Audio from Client
-                data = await websocket.receive_bytes()
-                # Send to Deepgram
-                await dg_connection.send(data)
+                try:
+                    data = await asyncio.wait_for(websocket.receive_bytes(), timeout=0.1)
+                    # Send to Deepgram
+                    await dg_connection.send(data)
+                except asyncio.TimeoutError:
+                    continue # Check loop again
         
         except WebSocketDisconnect:
             logger.info("Client disconnected")
