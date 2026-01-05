@@ -99,6 +99,9 @@ async def run_piper_tts(text: str, websocket: WebSocket):
         "--output-raw",
     ]
 
+    start_time = time.time()
+    total_bytes = 0
+
     try:
         # Create subprocess
         process = await asyncio.create_subprocess_exec(
@@ -120,81 +123,102 @@ async def run_piper_tts(text: str, websocket: WebSocket):
             if not chunk:
                 break
             await websocket.send_bytes(chunk)
+            total_bytes += len(chunk)
 
         await process.wait()
         
         if process.returncode != 0:
             err = await process.stderr.read()
             logger.error(f"Piper Error: {err.decode()}")
+        
+        # SIMULATION: Wait for audio duration to prevent premature turn-taking
+        # Piper generates fast, but we want to block logical flow until audio "finishes" playing
+        # Duration = Bytes / (Rate * Channels * BytesPerSample)
+        # Piper output is 16-bit (2 bytes) Mono (1 channel)
+        audio_duration = total_bytes / (TTS_RATE_PIPER * 1 * 2)
+        elapsed = time.time() - start_time
+        remaining = audio_duration - elapsed
+        
+        if remaining > 0:
+            # logger.info(f"Piper: Sleeping {remaining:.2f}s to simulate playback")
+            await asyncio.sleep(remaining)
 
     except Exception as e:
         logger.error(f"Piper Exception: {e}")
 
 
-async def run_llm_and_tts(text: str, websocket: WebSocket, tts_provider: str):
+async def run_llm_and_tts(text: str, websocket: WebSocket, tts_provider: str, state: dict):
     """Pipeline: Text -> Groq (Stream) -> Sentence Buffer -> TTS (Stream) -> WebSocket"""
     logger.info(f"Processing: {text} [TTS: {tts_provider}]")
     
-    await websocket.send_json({"type": "status", "content": "thinking"})
-
-    groq = Groq(api_key=GROQ_API_KEY)
-
-    messages = [
-        {"role": "system", "content": "You are a helpful voice assistant. Keep answers concise (1-2 sentences) for voice output."},
-        {"role": "user", "content": text}
-    ]
-
+    # state["is_speaking"] = True # Gate Removed for Full Duplex
     try:
-        stream = groq.chat.completions.create(
-            messages=messages,
-            model="llama-3.1-8b-instant",
-            stream=True
-        )
+        await websocket.send_json({"type": "status", "content": "thinking"})
 
-        sentence_buffer = ""
-        punctuation = {'.', '?', '!', ':', ';'} 
+        groq = Groq(api_key=GROQ_API_KEY)
 
-        async def speak(text_chunk):
-            if not text_chunk.strip(): return
-            
-            if tts_provider == "piper":
-                await run_piper_tts(text_chunk, websocket)
-            else:
-                # Deepgram Logic
-                await websocket.send_json({"type": "transcript", "role": "assistant", "content": text_chunk})
+        messages = [
+            {"role": "system", "content": "You are a helpful voice assistant. Keep answers concise (1-2 sentences) for voice output."},
+            {"role": "user", "content": text}
+        ]
+
+        try:
+            stream = groq.chat.completions.create(
+                messages=messages,
+                model="llama-3.1-8b-instant",
+                stream=True
+            )
+
+            sentence_buffer = ""
+            punctuation = {'.', '?', '!', ':', ';'} 
+
+            async def speak(text_chunk):
+                if not text_chunk.strip(): return
                 
-                url = f"https://api.deepgram.com/v1/speak?model=aura-asteria-en&encoding=linear16&sample_rate={TTS_RATE_DEEPGRAM}&container=none"
-                headers = {"Authorization": f"Token {DEEPGRAM_API_KEY}", "Content-Type": "application/json"}
-                payload = {"text": text_chunk}
+                if tts_provider == "piper":
+                    await run_piper_tts(text_chunk, websocket)
+                else:
+                    # Deepgram Logic
+                    await websocket.send_json({"type": "transcript", "role": "assistant", "content": text_chunk})
+                    
+                    url = f"https://api.deepgram.com/v1/speak?model=aura-asteria-en&encoding=linear16&sample_rate={TTS_RATE_DEEPGRAM}&container=none"
+                    headers = {"Authorization": f"Token {DEEPGRAM_API_KEY}", "Content-Type": "application/json"}
+                    payload = {"text": text_chunk}
 
-                try:
-                    async with aiohttp.ClientSession() as session:
-                        async with session.post(url, headers=headers, json=payload) as response:
-                            if response.status == 200:
-                                async for chunk in response.content.iter_chunked(1024):
-                                    if chunk: 
-                                        await websocket.send_bytes(chunk)
-                            else:
-                                logger.error(f"TTS Error: {await response.text()}")
-                except Exception as e:
-                    logger.error(f"TTS Exception: {e}")
+                    try:
+                        async with aiohttp.ClientSession() as session:
+                            async with session.post(url, headers=headers, json=payload) as response:
+                                if response.status == 200:
+                                    async for chunk in response.content.iter_chunked(1024):
+                                        if chunk: 
+                                            await websocket.send_bytes(chunk)
+                                else:
+                                    logger.error(f"TTS Error: {await response.text()}")
+                    except Exception as e:
+                        logger.error(f"TTS Exception: {e}")
 
-        for chunk in stream:
-            token = chunk.choices[0].delta.content
-            if token:
-                sentence_buffer += token
-                if any(p in token for p in punctuation):
-                    await speak(sentence_buffer)
-                    sentence_buffer = ""
-        
-        if sentence_buffer:
-            await speak(sentence_buffer)
+            for chunk in stream:
+                token = chunk.choices[0].delta.content
+                if token:
+                    sentence_buffer += token
+                    if any(p in token for p in punctuation):
+                        await speak(sentence_buffer)
+                        sentence_buffer = ""
             
-        await websocket.send_json({"type": "status", "content": "listening"})
+            if sentence_buffer:
+                await speak(sentence_buffer)
+                
+            await websocket.send_json({"type": "status", "content": "listening"})
 
-    except Exception as e:
-        logger.error(f"LLM Error: {e}")
-        await websocket.send_json({"type": "error", "content": str(e)})
+        except Exception as e:
+            logger.error(f"LLM Error: {e}")
+            await websocket.send_json({"type": "error", "content": str(e)})
+
+    finally:
+        # VERY IMPORTANT: Release the gate
+        # Add a small buffer to ensure echo dies down?
+        await asyncio.sleep(0.5) 
+        # state["is_speaking"] = False
 
 
 # --- Security --- (Unchanged)
@@ -216,12 +240,12 @@ async def audio_stream(websocket: WebSocket, token: str = Query(None), tts_provi
     await websocket.accept()
     logger.info(f"Client connected [TTS: {tts_provider}]")
 
-    # 2. Send Configuration to Client
-    # Tell frontend which sample rate to use for playback
+    # 2. Send Configuration
     sample_rate = TTS_RATE_PIPER if tts_provider == "piper" else TTS_RATE_DEEPGRAM
     await websocket.send_json({"type": "config", "sample_rate": sample_rate})
 
     silence_manager = SilenceManager()
+    server_state = {"is_speaking": False}
     
     # 3. Setup Deepgram STT
     try:
@@ -233,6 +257,10 @@ async def audio_stream(websocket: WebSocket, token: str = Query(None), tts_provi
             sentence = result.channel.alternatives[0].transcript
             if not sentence: return
             
+            # Double check: We want to process EVERYTHING now for full duplex.
+            # if server_state["is_speaking"] and tts_provider == "piper":
+            #      return
+
             silence_manager.update_activity()
             
             if result.is_final:
@@ -263,7 +291,7 @@ async def audio_stream(websocket: WebSocket, token: str = Query(None), tts_provi
                 await asyncio.sleep(0.1)
                 text = silence_manager.get_if_silence()
                 if text:
-                     await run_llm_and_tts(text, websocket, tts_provider)
+                     await run_llm_and_tts(text, websocket, tts_provider, server_state)
 
         checker_task = asyncio.create_task(silence_checker())
 
@@ -272,7 +300,12 @@ async def audio_stream(websocket: WebSocket, token: str = Query(None), tts_provi
                 # Receive Audio from Client
                 try:
                     data = await asyncio.wait_for(websocket.receive_bytes(), timeout=0.1)
+                    
+                    # GATE REMOVED: Full Duplex Mode (Barge-In compliant)
+                    # We send all audio to Deepgram. Browser AEC should handle echo.
+                    # Future VAD will handle logical interruption.
                     await dg_connection.send(data)
+
                 except asyncio.TimeoutError:
                     continue 
         
@@ -287,6 +320,7 @@ async def audio_stream(websocket: WebSocket, token: str = Query(None), tts_provi
     except Exception as e:
         logger.error(f"Deepgram setup error: {e}")
         await websocket.close()
+
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)

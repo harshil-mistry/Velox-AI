@@ -6,8 +6,16 @@ import { useState, useEffect, useRef } from 'react';
 export default function Home() {
   const [ttsProvider, setTtsProvider] = useState<'deepgram' | 'piper'>('deepgram');
 
+  // Determine WS URL dynamically (client-side only)
+  const [wsUrl, setWsUrl] = useState('');
+
+  useEffect(() => {
+    // This runs only on the client
+    setWsUrl(`ws://${window.location.hostname}:8000/ws/stream`);
+  }, []);
+
   const { status, isSpeaking, transcript, connect, disconnect } = useVoiceAgent(
-    'ws://localhost:8000/ws/stream',
+    wsUrl,
     'velox-secret-123',
     ttsProvider
   );
