@@ -3,10 +3,27 @@ import pyaudio
 import numpy as np
 import time
 import os
+
+# Fix for Windows DLL loading
+try:
+    import site
+    site_packages = site.getusersitepackages()
+    cudnn_bin = os.path.join(site_packages, "nvidia", "cudnn", "bin")
+    cublas_bin = os.path.join(site_packages, "nvidia", "cublas", "bin")
+    
+    if os.path.exists(cudnn_bin):
+        os.add_dll_directory(cudnn_bin)
+        print(f"Added DLL Directory: {cudnn_bin}")
+    if os.path.exists(cublas_bin):
+        os.add_dll_directory(cublas_bin)
+        print(f"Added DLL Directory: {cublas_bin}")
+except Exception as e:
+    print(f"Failed to add DLL directories: {e}")
+
 from faster_whisper import WhisperModel
 
 # === Configuration ===
-MODEL_SIZE = "large-v2.en"  # options: tiny, base, small, medium, large-v2
+MODEL_SIZE = "large-v2"  # options: tiny, base, small, medium, large-v2
 COMPUTE_TYPE = "int8"   # Use "float16" if you have a GPU, "int8" for CPU
 # VAD Config
 VAD_THRESHOLD = 0.5     # Simple energy threshold for this demo (Faster Whisper has internal VAD too)
@@ -20,8 +37,15 @@ FORMAT = pyaudio.paInt16
 class RealTimeTranscriber:
     def __init__(self):
         print(f"Loading Whisper Model ({MODEL_SIZE})...")
-        self.model = WhisperModel(MODEL_SIZE, device="cpu", compute_type=COMPUTE_TYPE)
-        print("Model Loaded.")
+        try:
+            # Try loading on GPU first
+            self.model = WhisperModel(MODEL_SIZE, device="cuda", compute_type="float16")
+            print("✅ Model Loaded on GPU (CUDA).")
+        except Exception as e:
+            print(f"⚠️ GPU Load Failed: {e}")
+            print("🔄 Falling back to CPU (int8)...")
+            self.model = WhisperModel(MODEL_SIZE, device="cpu", compute_type="int8")
+            print("✅ Model Loaded on CPU.")
         
         self.p = pyaudio.PyAudio()
         self.stream = self.p.open(
