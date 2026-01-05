@@ -5,6 +5,8 @@ import { useState, useEffect, useRef } from 'react';
 
 export default function Home() {
   const [ttsProvider, setTtsProvider] = useState<'deepgram' | 'piper'>('deepgram');
+  const [sttProvider, setSttProvider] = useState<'deepgram' | 'gladia'>('deepgram');
+  const [sttLanguage, setSttLanguage] = useState<string>('english');
 
   // Determine WS URL dynamically (client-side only)
   const [wsUrl, setWsUrl] = useState('');
@@ -17,7 +19,9 @@ export default function Home() {
   const { status, isSpeaking, transcript, connect, disconnect } = useVoiceAgent(
     wsUrl,
     'velox-secret-123',
-    ttsProvider
+    ttsProvider,
+    sttProvider,
+    sttLanguage
   );
 
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -43,18 +47,53 @@ export default function Home() {
 
       <div className="relative flex flex-col items-center justify-center py-10">
 
-        {/* TTS Selector */}
-        <div className="absolute top-0 right-0 p-4">
-          <label className="block text-xs font-bold text-gray-400 mb-1">TTS Provider</label>
-          <select
-            disabled={status === 'connected'}
-            value={ttsProvider}
-            onChange={(e) => setTtsProvider(e.target.value as 'deepgram' | 'piper')}
-            className="bg-gray-800 border border-gray-600 rounded px-2 py-1 text-sm text-white focus:outline-none focus:border-blue-500 disabled:opacity-50"
-          >
-            <option value="deepgram">Deepgram Aura (Cloud)</option>
-            <option value="piper">Piper (Local)</option>
-          </select>
+        {/* Settings Panel */}
+        <div className="absolute top-0 right-0 p-4 flex flex-col gap-2 bg-gray-900 rounded-bl-xl border-l border-b border-gray-700">
+
+          {/* STT Selector */}
+          <div>
+            <label className="block text-xs font-bold text-gray-400 mb-1">STT Provider</label>
+            <select
+              disabled={status === 'connected'}
+              value={sttProvider}
+              onChange={(e) => setSttProvider(e.target.value as 'deepgram' | 'gladia')}
+              className="w-full bg-gray-800 border border-gray-600 rounded px-2 py-1 text-sm text-white focus:outline-none focus:border-blue-500 disabled:opacity-50"
+            >
+              <option value="deepgram">Deepgram Nova-2</option>
+              <option value="gladia">Gladia (Cloud)</option>
+            </select>
+          </div>
+
+          {/* Language Selector (Gladia Only) */}
+          {sttProvider === 'gladia' && (
+            <div>
+              <label className="block text-xs font-bold text-gray-400 mb-1">Language</label>
+              <select
+                disabled={status === 'connected'}
+                value={sttLanguage}
+                onChange={(e) => setSttLanguage(e.target.value)}
+                className="w-full bg-gray-800 border border-gray-600 rounded px-2 py-1 text-sm text-white focus:outline-none focus:border-blue-500 disabled:opacity-50"
+              >
+                <option value="english">English (default)</option>
+                <option value="gujarati">Gujarati</option>
+                <option value="hindi">Hindi</option>
+              </select>
+            </div>
+          )}
+
+          {/* TTS Selector */}
+          <div>
+            <label className="block text-xs font-bold text-gray-400 mb-1">TTS Provider</label>
+            <select
+              disabled={status === 'connected'}
+              value={ttsProvider}
+              onChange={(e) => setTtsProvider(e.target.value as 'deepgram' | 'piper')}
+              className="w-full bg-gray-800 border border-gray-600 rounded px-2 py-1 text-sm text-white focus:outline-none focus:border-blue-500 disabled:opacity-50"
+            >
+              <option value="deepgram">Deepgram Aura (Cloud)</option>
+              <option value="piper">Piper (Local)</option>
+            </select>
+          </div>
         </div>
 
         <div className={`w-32 h-32 rounded-full flex items-center justify-center transition-all duration-300 ${isSpeaking ? 'bg-green-500 animate-pulse scale-110' : 'bg-gray-700'}`}>

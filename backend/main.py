@@ -9,6 +9,8 @@ import threading
 import time
 import time
 import aiohttp
+import websockets
+import base64
 from dotenv import load_dotenv
 
 from deepgram import (
@@ -27,6 +29,7 @@ logger = logging.getLogger("VeloxBackend")
 load_dotenv()
 DEEPGRAM_API_KEY = os.getenv("DEEPGRAM_API_KEY")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+GLADIA_API_KEY = os.getenv("GLADIA_API_KEY")
 
 app = FastAPI()
 
@@ -241,7 +244,7 @@ def verify_token(token: str):
 # --- WebSocket Endpoint ---
 
 @app.websocket("/ws/stream")
-async def audio_stream(websocket: WebSocket, token: str = Query(None), tts_provider: str = Query("deepgram")):
+async def audio_stream(websocket: WebSocket, token: str = Query(None), tts_provider: str = Query("deepgram"), stt_provider: str = Query("deepgram"), stt_language: str = Query("english")):
     # 1. Verification
     if not verify_token(token):
         logger.warning(f"Unauthorized connection attempt with token: {token}")
@@ -259,7 +262,81 @@ async def audio_stream(websocket: WebSocket, token: str = Query(None), tts_provi
     server_state = {"is_speaking": False}
     conversation_history = []
     
-    # 3. Setup Deepgram STT
+    # 3. STT Setup (Gladia or Deepgram)
+    
+    if stt_provider == "gladia":
+        if not GLADIA_API_KEY:
+            logger.error("Gladia API Key missing")
+            await websocket.close(code=4000)
+            return
+
+        gladia_url = "wss://api.gladia.io/audio/text/audio-transcription"
+        
+        try:
+             async with websockets.connect(gladia_url) as gladia_ws:
+                # Send Config
+                config = {
+                    "x_gladia_key": GLADIA_API_KEY,
+                    "sample_rate": 16000,
+                    "encoding": "wav",
+                    "language_behaviour": "manual",
+                    "language": stt_language,
+                    "frames_format": "base64",
+                }
+                await gladia_ws.send(json.dumps(config))
+                logger.info("Connected to Gladia Utils")
+
+                # Receive Task for Gladia
+                async def receive_gladia():
+                    try:
+                        async for message in gladia_ws:
+                            data = json.loads(message)
+                            if "transcription" in data and data["transcription"]:
+                                text = data["transcription"]
+                                is_final = data.get("type") == "final"
+                                
+                                silence_manager.update_activity()
+                                if is_final:
+                                    logger.info(f"User (Gladia): {text}")
+                                    silence_manager.add_text(text)
+                                    await websocket.send_json({"type": "transcript", "role": "user", "content": text})
+                    except Exception as e:
+                        logger.error(f"Gladia Receive Error: {e}")
+
+                gladia_receiver = asyncio.create_task(receive_gladia())
+                
+                # Main Loop (Sending to Gladia)
+                async def silence_checker():
+                    while True:
+                        await asyncio.sleep(0.1)
+                        text = silence_manager.get_if_silence()
+                        if text:
+                             await run_llm_and_tts(text, websocket, tts_provider, server_state, conversation_history)
+
+                checker_task = asyncio.create_task(silence_checker())
+                
+                try:
+                    while True:
+                        # Receive Audio from Client
+                        data = await websocket.receive_bytes()
+                        # Send to Gladia
+                        base64_data = base64.b64encode(data).decode("utf-8")
+                        await gladia_ws.send(json.dumps({"frames": base64_data}))
+                
+                except WebSocketDisconnect:
+                    logger.info("Client disconnected")
+                finally:
+                    gladia_receiver.cancel()
+                    checker_task.cancel()
+
+        except Exception as e:
+             logger.error(f"Gladia Connection Error: {e}")
+             await websocket.close()
+             return
+
+        return
+
+    # Default: Deepgram Logic
     try:
         config = DeepgramClientOptions(options={"keepalive": "true"})
         deepgram = DeepgramClient(DEEPGRAM_API_KEY, config)
