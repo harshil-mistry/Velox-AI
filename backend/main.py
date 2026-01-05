@@ -147,20 +147,25 @@ async def run_piper_tts(text: str, websocket: WebSocket):
         logger.error(f"Piper Exception: {e}")
 
 
-async def run_llm_and_tts(text: str, websocket: WebSocket, tts_provider: str, state: dict):
+async def run_llm_and_tts(text: str, websocket: WebSocket, tts_provider: str, state: dict, history: list):
     """Pipeline: Text -> Groq (Stream) -> Sentence Buffer -> TTS (Stream) -> WebSocket"""
     logger.info(f"Processing: {text} [TTS: {tts_provider}]")
     
+    # 1. Update History with User Input
+    history.append({"role": "user", "content": text})
+
     # state["is_speaking"] = True # Gate Removed for Full Duplex
     try:
         await websocket.send_json({"type": "status", "content": "thinking"})
 
         groq = Groq(api_key=GROQ_API_KEY)
 
-        messages = [
-            {"role": "system", "content": "You are a helpful voice assistant. Keep answers concise (1-2 sentences) for voice output."},
-            {"role": "user", "content": text}
-        ]
+        # 2. Prepare Messages (System + Last 25 Context)
+        system_msg = {"role": "system", "content": "You are a helpful voice assistant. Keep answers concise (1-2 sentences) for voice output."}
+        
+        # Limit context to last 25 messages
+        context_messages = history[-25:]
+        messages = [system_msg] + context_messages
 
         try:
             stream = groq.chat.completions.create(
@@ -170,6 +175,7 @@ async def run_llm_and_tts(text: str, websocket: WebSocket, tts_provider: str, st
             )
 
             sentence_buffer = ""
+            full_response = "" # Track full response for history
             punctuation = {'.', '?', '!', ':', ';'} 
 
             async def speak(text_chunk):
@@ -201,13 +207,18 @@ async def run_llm_and_tts(text: str, websocket: WebSocket, tts_provider: str, st
                 token = chunk.choices[0].delta.content
                 if token:
                     sentence_buffer += token
+                    full_response += token
                     if any(p in token for p in punctuation):
                         await speak(sentence_buffer)
                         sentence_buffer = ""
             
             if sentence_buffer:
                 await speak(sentence_buffer)
-                
+            
+            # 3. Update History with Assistant Response
+            if full_response.strip():
+                history.append({"role": "assistant", "content": full_response})
+
             await websocket.send_json({"type": "status", "content": "listening"})
 
         except Exception as e:
@@ -246,6 +257,7 @@ async def audio_stream(websocket: WebSocket, token: str = Query(None), tts_provi
 
     silence_manager = SilenceManager()
     server_state = {"is_speaking": False}
+    conversation_history = []
     
     # 3. Setup Deepgram STT
     try:
@@ -280,8 +292,25 @@ async def audio_stream(websocket: WebSocket, token: str = Query(None), tts_provi
             interim_results=True
         )
 
-        if await dg_connection.start(options) is False:
-            logger.error("Failed to connect to Deepgram")
+        # Connect with Retry Logic
+        connected = False
+        for attempt in range(1, 4):
+            try:
+                logger.info(f"Connecting to Deepgram (Attempt {attempt}/3)...")
+                if await dg_connection.start(options) is True:
+                    connected = True
+                    logger.info("Deepgram connected successfully.")
+                    break
+            except Exception as e:
+                logger.warning(f"Deepgram connection attempt {attempt} failed: {e}")
+            
+            if attempt < 3:
+                wait_time = attempt * 1
+                logger.info(f"Retrying in {wait_time}s...")
+                await asyncio.sleep(wait_time)
+
+        if not connected:
+            logger.error("Failed to connect to Deepgram after 3 attempts")
             await websocket.close()
             return
 
@@ -291,7 +320,7 @@ async def audio_stream(websocket: WebSocket, token: str = Query(None), tts_provi
                 await asyncio.sleep(0.1)
                 text = silence_manager.get_if_silence()
                 if text:
-                     await run_llm_and_tts(text, websocket, tts_provider, server_state)
+                     await run_llm_and_tts(text, websocket, tts_provider, server_state, conversation_history)
 
         checker_task = asyncio.create_task(silence_checker())
 
@@ -319,7 +348,7 @@ async def audio_stream(websocket: WebSocket, token: str = Query(None), tts_provi
 
     except Exception as e:
         logger.error(f"Deepgram setup error: {e}")
-        await websocket.close()
+        # await websocket.close() # Avoid closing if connection failed earlier, but safe to keep
 
 
 if __name__ == "__main__":
