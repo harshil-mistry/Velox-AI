@@ -440,6 +440,10 @@ async def audio_stream(websocket: WebSocket, token: str = Query(None), tts_provi
                                     )
                                 else:
                                     print(f"User (Gladia Partial): {text}") # Print partials
+                                    
+                                    # Transcript-based Interruption (Partial or Final)
+                                    if text and (task_manager.is_ai_speaking or task_manager.is_thinking):
+                                        await task_manager.handle_interruption(websocket)
                     except Exception as e:
                         logger.error(f"Gladia Receive Error: {e}")
 
@@ -452,9 +456,9 @@ async def audio_stream(websocket: WebSocket, token: str = Query(None), tts_provi
                         # Receive Audio from Client
                         data = await websocket.receive_bytes()
                         
-                        # VAD Check
-                        if task_manager.check_silero_vad(data):
-                            await task_manager.handle_interruption(websocket)
+                        # VAD Check (Silero REMOVED - using Transcript VAD)
+                        # if task_manager.check_silero_vad(data):
+                        #    await task_manager.handle_interruption(websocket)
 
                         # Send to Gladia
                         base64_data = base64.b64encode(data).decode("utf-8")
@@ -523,6 +527,10 @@ async def audio_stream(websocket: WebSocket, token: str = Query(None), tts_provi
                                     else:
                                         print(f"User (Deepgram Partial): {sentence}")
 
+                                    # Transcript-based Interruption
+                                    if sentence and (task_manager.is_ai_speaking or task_manager.is_thinking):
+                                        await task_manager.handle_interruption(websocket)
+
                             elif msg_type == "UtteranceEnd":
                                 # Native Endpointing Trigger
                                 text = silence_manager.get_if_silence() # This cleans the buffer
@@ -544,9 +552,9 @@ async def audio_stream(websocket: WebSocket, token: str = Query(None), tts_provi
                         try:
                             data = await asyncio.wait_for(websocket.receive_bytes(), timeout=0.1)
                             
-                            # VAD CHECK
-                            if task_manager.check_silero_vad(data):
-                                 await task_manager.handle_interruption(websocket)
+                            # VAD CHECK (Silero REMOVED - using Transcript VAD)
+                            # if task_manager.check_silero_vad(data):
+                            #      await task_manager.handle_interruption(websocket)
 
                             await dg_ws.send(data)
 
