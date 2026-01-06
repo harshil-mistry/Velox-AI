@@ -61,6 +61,8 @@ class TaskStateManager:
         # Reference to the current LLM task to allow cancellation
         self.llm_task: asyncio.Task = None
         self.interrupt_signal = threading.Event()
+        self.was_interrupted = False # Context flag
+
 
         # VAD State
         self.vad_model_path = "silero_vad.onnx"
@@ -166,6 +168,7 @@ class TaskStateManager:
             # 2. Reset Flags
             self.is_ai_speaking = False
             self.is_thinking = False
+            self.was_interrupted = True # Flag interruption
             self.interrupt_signal.set() # Signal to TTS loops to abort
             
             # 3. Notify Frontend to Stop Audio
@@ -304,8 +307,16 @@ async def run_llm_and_tts(text: str, websocket: WebSocket, tts_provider: str, ta
         groq = Groq(api_key=GROQ_API_KEY)
 
         # 2. Prepare Messages (System + Last 25 Context)
-        system_msg = {"role": "system", "content": "You are a helpful voice assistant. Keep answers concise (1-2 sentences) for voice output."}
+        # 2. Prepare Messages (System + Last 25 Context)
+        system_msg = {"role": "system", "content": "You are a helpful voice assistant. Keep answers concise (1-2 sentences) for voice output. If the user interrupts you (marked as '[User interrupted you]'), handle it naturally and stop your previous train of thought. Do not apologize for being interrupted in every turn, just move on."}
         
+        # Contextual Barge-In
+        if task_manager.was_interrupted:
+            text += " [User interrupted you]"
+            task_manager.was_interrupted = False
+        
+        logger.info(f"LLM Input: {text}") # Debug Log
+
         # Limit context to last 25 messages
         context_messages = history[-25:]
         messages = [system_msg] + context_messages
