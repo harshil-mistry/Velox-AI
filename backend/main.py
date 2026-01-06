@@ -171,6 +171,22 @@ class TaskStateManager:
             # 3. Notify Frontend to Stop Audio
             await websocket.send_json({"type": "control", "action": "interrupt"})
 
+    async def schedule_llm_task(self, coro):
+        """Safely replaces the current LLM task with a new one."""
+        # 1. Cancel existing
+        if self.llm_task and not self.llm_task.done():
+            self.llm_task.cancel()
+            try:
+                await self.llm_task
+            except asyncio.CancelledError:
+                pass
+        
+        # 2. Reset Signal for new task
+        self.interrupt_signal.clear()
+        
+        # 3. Start New
+        self.llm_task = asyncio.create_task(coro)
+
 class SilenceManager:
     """Manages the user state (Speaking/Silent) to trigger the AI."""
     def __init__(self):
@@ -435,7 +451,7 @@ async def audio_stream(websocket: WebSocket, token: str = Query(None), tts_provi
                                     await websocket.send_json({"type": "transcript", "role": "user", "content": text})
                                     
                                     # Trigger LLM Immediately on Final (Endpointing)
-                                    task_manager.llm_task = asyncio.create_task(
+                                    await task_manager.schedule_llm_task(
                                         run_llm_and_tts(text, websocket, tts_provider, task_manager, conversation_history)
                                     )
                                 else:
@@ -536,7 +552,7 @@ async def audio_stream(websocket: WebSocket, token: str = Query(None), tts_provi
                                 text = silence_manager.get_if_silence() # This cleans the buffer
                                 if text:
                                     logger.info("Deepgram UtteranceEnd -> Triggering LLM")
-                                    task_manager.llm_task = asyncio.create_task(
+                                    await task_manager.schedule_llm_task(
                                         run_llm_and_tts(text, websocket, tts_provider, task_manager, conversation_history)
                                     )
 

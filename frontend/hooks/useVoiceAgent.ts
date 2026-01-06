@@ -56,20 +56,24 @@ export function useVoiceAgent(serverUrl: string, token: string, ttsProvider: 'de
                                 console.log('⚡ Interruption Received');
                                 // 1. Clear Queue
                                 audioQueueRef.current = [];
-                                nextStartTimeRef.current = 0;
 
                                 // 2. Stop ALL Current Audio
-                                activeSourceNodesRef.current.forEach(node => {
+                                // Snapshot the array because .stop() triggers onended which modifies the ref
+                                const nodesToStop = [...activeSourceNodesRef.current];
+                                activeSourceNodesRef.current = []; // Clear tracking immediately
+
+                                nodesToStop.forEach(node => {
                                     try {
+                                        node.onended = null; // Prevent callback handling
                                         node.stop();
                                     } catch (e) {
                                         // Ignore
                                     }
                                 });
-                                activeSourceNodesRef.current = [];
 
-                                // Reset timing
+                                // 3. Reset timing
                                 if (audioContextRef.current) {
+                                    // Add a tiny buffer to avoid "start time in past" glitches, though ctx handles it.
                                     nextStartTimeRef.current = audioContextRef.current.currentTime;
                                 }
 
