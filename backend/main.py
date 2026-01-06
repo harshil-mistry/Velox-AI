@@ -481,84 +481,96 @@ async def audio_stream(websocket: WebSocket, token: str = Query(None), tts_provi
     )
     headers = {"Authorization": f"Token {DEEPGRAM_API_KEY}"}
 
-    try:
-        async with websockets.connect(deepgram_url, additional_headers=headers) as dg_ws:
-            logger.info("Connected to Deepgram (Manual WS)")
+    # Retry Logic for Deepgram Connection
+    connected = False
+    for attempt in range(1, 4):
+        try:
+            async with websockets.connect(deepgram_url, additional_headers=headers) as dg_ws:
+                logger.info("Connected to Deepgram (Manual WS)")
+                connected = True
 
-            # 1. Keep Alive Task
-            async def keep_alive():
-                while True:
-                    await asyncio.sleep(5)
+                # 1. Keep Alive Task
+                async def keep_alive():
+                    while True:
+                        await asyncio.sleep(5)
+                        try:
+                            await dg_ws.send(json.dumps({"type": "KeepAlive"}))
+                        except Exception:
+                            break
+                
+                keep_alive_task = asyncio.create_task(keep_alive())
+
+                # 2. Receive Task
+                async def receive_deepgram():
                     try:
-                        await dg_ws.send(json.dumps({"type": "KeepAlive"}))
-                    except Exception:
-                        break
-            
-            keep_alive_task = asyncio.create_task(keep_alive())
+                        async for message in dg_ws:
+                            msg = json.loads(message)
+                            msg_type = msg.get("type")
 
-            # 2. Receive Task
-            async def receive_deepgram():
+                            if msg_type == "Results":
+                                if "channel" in msg and "alternatives" in msg["channel"]:
+                                    alt = msg["channel"]["alternatives"][0]
+                                    sentence = alt.get("transcript", "")
+                                    if not sentence: continue
+
+                                    silence_manager.update_activity()
+                                    is_final = msg.get("is_final")
+
+                                    if is_final:
+                                        logger.info(f"User (Deepgram Final): {sentence}")
+                                        silence_manager.add_text(sentence)
+                                        await websocket.send_json({"type": "transcript", "role": "user", "content": sentence})
+                                    else:
+                                        print(f"User (Deepgram Partial): {sentence}")
+
+                            elif msg_type == "UtteranceEnd":
+                                # Native Endpointing Trigger
+                                text = silence_manager.get_if_silence() # This cleans the buffer
+                                if text:
+                                    logger.info("Deepgram UtteranceEnd -> Triggering LLM")
+                                    task_manager.llm_task = asyncio.create_task(
+                                        run_llm_and_tts(text, websocket, tts_provider, task_manager, conversation_history)
+                                    )
+
+                    except Exception as e:
+                        logger.error(f"Deepgram Receiver Error: {e}")
+
+                receiver_task = asyncio.create_task(receive_deepgram())
+
+                # 3. Main Loop
                 try:
-                    async for message in dg_ws:
-                        msg = json.loads(message)
-                        msg_type = msg.get("type")
+                    while True:
+                        # Receive Audio from Client
+                        try:
+                            data = await asyncio.wait_for(websocket.receive_bytes(), timeout=0.1)
+                            
+                            # VAD CHECK
+                            if task_manager.check_silero_vad(data):
+                                 await task_manager.handle_interruption(websocket)
 
-                        if msg_type == "Results":
-                            if "channel" in msg and "alternatives" in msg["channel"]:
-                                alt = msg["channel"]["alternatives"][0]
-                                sentence = alt.get("transcript", "")
-                                if not sentence: continue
+                            await dg_ws.send(data)
 
-                                silence_manager.update_activity()
-                                is_final = msg.get("is_final")
+                        except asyncio.TimeoutError:
+                            continue 
+                
+                except WebSocketDisconnect:
+                    logger.info("Client disconnected")
+                    return # Exit cleanly on disconnect
+                finally:
+                    keep_alive_task.cancel()
+                    receiver_task.cancel()
+                
+                # If we exit the context manager safely (unlikely unless return/break), we break retry
+                break 
 
-                                if is_final:
-                                    logger.info(f"User (Deepgram Final): {sentence}")
-                                    silence_manager.add_text(sentence)
-                                    await websocket.send_json({"type": "transcript", "role": "user", "content": sentence})
-                                else:
-                                    print(f"User (Deepgram Partial): {sentence}")
-
-                        elif msg_type == "UtteranceEnd":
-                            # Native Endpointing Trigger
-                            text = silence_manager.get_if_silence() # This cleans the buffer
-                            if text:
-                                logger.info("Deepgram UtteranceEnd -> Triggering LLM")
-                                task_manager.llm_task = asyncio.create_task(
-                                    run_llm_and_tts(text, websocket, tts_provider, task_manager, conversation_history)
-                                )
-
-                except Exception as e:
-                    logger.error(f"Deepgram Receiver Error: {e}")
-
-            receiver_task = asyncio.create_task(receive_deepgram())
-
-            # 3. Main Loop
-            try:
-                while True:
-                    # Receive Audio from Client
-                    try:
-                        data = await asyncio.wait_for(websocket.receive_bytes(), timeout=0.1)
-                        
-                        # VAD CHECK
-                        if task_manager.check_silero_vad(data):
-                             await task_manager.handle_interruption(websocket)
-
-                        await dg_ws.send(data)
-
-                    except asyncio.TimeoutError:
-                        continue 
-            
-            except WebSocketDisconnect:
-                logger.info("Client disconnected")
-            finally:
-                keep_alive_task.cancel()
-                receiver_task.cancel()
-
-    except Exception as e:
-        logger.error(f"Deepgram Connection Error: {e}")
-        await websocket.close()
-        return
+        except Exception as e:
+            logger.warning(f"Deepgram Connection Attempt {attempt} failed: {e}")
+            if attempt < 3:
+                await asyncio.sleep(attempt * 1) # Exponential backoff: 1s, 2s
+            else:
+                logger.error("Deepgram Connection Failed after 3 attempts")
+                await websocket.close()
+                return
 
 
 if __name__ == "__main__":
