@@ -11,6 +11,8 @@ import time
 import aiohttp
 import websockets
 import base64
+import struct
+import math
 from dotenv import load_dotenv
 
 from deepgram import (
@@ -46,6 +48,60 @@ TTS_RATE = 24000
 SILENCE_TIMEOUT = 0.8
 
 # --- Shared Logic (Ported from Main Test) ---
+
+class TaskStateManager:
+    """Manages the conversation state and handles interruptions."""
+    def __init__(self):
+        self.is_user_speaking_now = False # Instantaneous VAD
+        self.is_ai_speaking = False
+        self.is_thinking = False
+        
+        # Reference to the current LLM task to allow cancellation
+        self.llm_task: asyncio.Task = None
+        
+        # TTS Queue Cleared Flag (Event to abort downstream TTS loops)
+        self.interrupt_signal = threading.Event()
+        
+    def check_energy_vad(self, audio_chunk: bytes, threshold=0.01) -> bool:
+        """Simple RMS-based VAD for barge-in detection."""
+        if not audio_chunk: return False
+        try:
+            # Assume 16-bit PCM (2 bytes per sample)
+            count = len(audio_chunk) // 2
+            if count == 0: return False
+            format_str = f"<{count}h" 
+            shorts = struct.unpack(format_str, audio_chunk)
+            
+            # Simple RMS
+            sum_squares = sum(s**2 for s in shorts)
+            rms = math.sqrt(sum_squares / count) / 32768.0
+            
+            return rms > threshold
+        except Exception as e:
+            # logger.error(f"VAD Error: {e}")
+            return False
+
+    async def handle_interruption(self, websocket: WebSocket):
+        """Cancels current tasks and notifies frontend."""
+        if self.is_ai_speaking or self.is_thinking:
+            logger.info("⚡ INTERRUPTION TRIGGERED")
+            
+            # 1. Cancel LLM Task
+            if self.llm_task and not self.llm_task.done():
+                self.llm_task.cancel()
+                try:
+                    await self.llm_task
+                except asyncio.CancelledError:
+                    pass
+                self.llm_task = None
+
+            # 2. Reset Flags
+            self.is_ai_speaking = False
+            self.is_thinking = False
+            self.interrupt_signal.set() # Signal to TTS loops to abort
+            
+            # 3. Notify Frontend to Stop Audio
+            await websocket.send_json({"type": "control", "action": "interrupt"})
 
 class SilenceManager:
     """Manages the user state (Speaking/Silent) to trigger the AI."""
@@ -150,14 +206,14 @@ async def run_piper_tts(text: str, websocket: WebSocket):
         logger.error(f"Piper Exception: {e}")
 
 
-async def run_llm_and_tts(text: str, websocket: WebSocket, tts_provider: str, state: dict, history: list):
+async def run_llm_and_tts(text: str, websocket: WebSocket, tts_provider: str, task_manager: TaskStateManager, history: list):
     """Pipeline: Text -> Groq (Stream) -> Sentence Buffer -> TTS (Stream) -> WebSocket"""
-    logger.info(f"Processing: {text} [TTS: {tts_provider}]")
     
     # 1. Update History with User Input
     history.append({"role": "user", "content": text})
-
-    # state["is_speaking"] = True # Gate Removed for Full Duplex
+    
+    task_manager.is_thinking = True
+    task_manager.interrupt_signal.clear()
     try:
         await websocket.send_json({"type": "status", "content": "thinking"})
 
@@ -186,9 +242,13 @@ async def run_llm_and_tts(text: str, websocket: WebSocket, tts_provider: str, st
 
                 async def speak(text_chunk):
                     if not text_chunk.strip(): return
+                    if task_manager.interrupt_signal.is_set(): return # Abort if interrupted
+
+                    task_manager.is_ai_speaking = True
+                    task_manager.is_thinking = False # Thinking phase done
                     
                     if tts_provider == "piper":
-                        await run_piper_tts(text_chunk, websocket)
+                        await run_piper_tts(text_chunk, websocket) # Note: Piper needs update strictly speaking, but for now we assume it finishes fast or we just kill task.
                     else:
                         # Deepgram Logic
                         await websocket.send_json({"type": "transcript", "role": "assistant", "content": text_chunk})
@@ -201,6 +261,7 @@ async def run_llm_and_tts(text: str, websocket: WebSocket, tts_provider: str, st
                             async with session.post(url, headers=headers, json=payload) as response:
                                 if response.status == 200:
                                     async for chunk in response.content.iter_chunked(8192):
+                                        if task_manager.interrupt_signal.is_set(): break
                                         if chunk: 
                                             await websocket.send_bytes(chunk)
                                 else:
@@ -209,6 +270,7 @@ async def run_llm_and_tts(text: str, websocket: WebSocket, tts_provider: str, st
                             logger.error(f"TTS Exception: {e}")
 
                 for chunk in stream:
+                    if task_manager.interrupt_signal.is_set(): break
                     token = chunk.choices[0].delta.content
                     if token:
                         sentence_buffer += token
@@ -217,7 +279,7 @@ async def run_llm_and_tts(text: str, websocket: WebSocket, tts_provider: str, st
                             await speak(sentence_buffer)
                             sentence_buffer = ""
                 
-                if sentence_buffer:
+                if sentence_buffer and not task_manager.interrupt_signal.is_set():
                     await speak(sentence_buffer)
             
             # 3. Update History with Assistant Response
@@ -227,14 +289,14 @@ async def run_llm_and_tts(text: str, websocket: WebSocket, tts_provider: str, st
             await websocket.send_json({"type": "status", "content": "listening"})
 
         except Exception as e:
-            logger.error(f"LLM Error: {e}")
-            await websocket.send_json({"type": "error", "content": str(e)})
+            if "Cancel" not in str(e): # Ignore cancellation errors
+                 logger.error(f"LLM Error: {e}")
+                 await websocket.send_json({"type": "error", "content": str(e)})
 
     finally:
-        # VERY IMPORTANT: Release the gate
-        # Add a small buffer to ensure echo dies down?
-        await asyncio.sleep(0.5) 
-        # state["is_speaking"] = False
+        task_manager.is_thinking = False
+        task_manager.is_ai_speaking = False
+        await asyncio.sleep(0.1)
 
 
 # --- Security --- (Unchanged)
@@ -261,7 +323,7 @@ async def audio_stream(websocket: WebSocket, token: str = Query(None), tts_provi
     await websocket.send_json({"type": "config", "sample_rate": sample_rate})
 
     silence_manager = SilenceManager()
-    server_state = {"is_speaking": False}
+    task_manager = TaskStateManager() # NEW: State Manager
     conversation_history = []
     
     # 3. STT Setup (Gladia or Deepgram)
@@ -313,7 +375,9 @@ async def audio_stream(websocket: WebSocket, token: str = Query(None), tts_provi
                         await asyncio.sleep(0.1)
                         text = silence_manager.get_if_silence()
                         if text:
-                             await run_llm_and_tts(text, websocket, tts_provider, server_state, conversation_history)
+                            task_manager.llm_task = asyncio.create_task(
+                                run_llm_and_tts(text, websocket, tts_provider, task_manager, conversation_history)
+                            )
 
                 checker_task = asyncio.create_task(silence_checker())
                 
@@ -321,6 +385,11 @@ async def audio_stream(websocket: WebSocket, token: str = Query(None), tts_provi
                     while True:
                         # Receive Audio from Client
                         data = await websocket.receive_bytes()
+                        
+                        # VAD Check
+                        if task_manager.check_energy_vad(data):
+                            await task_manager.handle_interruption(websocket)
+
                         # Send to Gladia
                         base64_data = base64.b64encode(data).decode("utf-8")
                         await gladia_ws.send(json.dumps({"frames": base64_data}))
@@ -399,7 +468,10 @@ async def audio_stream(websocket: WebSocket, token: str = Query(None), tts_provi
                 await asyncio.sleep(0.1)
                 text = silence_manager.get_if_silence()
                 if text:
-                     await run_llm_and_tts(text, websocket, tts_provider, server_state, conversation_history)
+                     # Create Task
+                     task_manager.llm_task = asyncio.create_task(
+                        run_llm_and_tts(text, websocket, tts_provider, task_manager, conversation_history)
+                     )
 
         checker_task = asyncio.create_task(silence_checker())
 
@@ -409,6 +481,11 @@ async def audio_stream(websocket: WebSocket, token: str = Query(None), tts_provi
                 try:
                     data = await asyncio.wait_for(websocket.receive_bytes(), timeout=0.1)
                     
+                    # VAD CHECK
+                    if task_manager.check_energy_vad(data):
+                         await task_manager.handle_interruption(websocket)
+
+                    await dg_connection.send(data)
                     # GATE REMOVED: Full Duplex Mode (Barge-In compliant)
                     # We send all audio to Deepgram. Browser AEC should handle echo.
                     # Future VAD will handle logical interruption.

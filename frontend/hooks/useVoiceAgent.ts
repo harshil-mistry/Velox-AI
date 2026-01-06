@@ -50,6 +50,24 @@ export function useVoiceAgent(serverUrl: string, token: string, ttsProvider: 'de
                         } else if (json.type === 'status') {
                             if (json.content === 'thinking') setIsSpeaking(true);
                             if (json.content === 'listening') setIsSpeaking(false);
+                        } else if (json.type === 'control') {
+                            if (json.action === 'interrupt') {
+                                console.log('⚡ Interruption Received');
+                                // 1. Clear Queue
+                                audioQueueRef.current = [];
+                                nextStartTimeRef.current = 0;
+
+                                // 2. Stop Current Audio (Suspend/Resume or just let it finish ~ms)
+                                // Ideally, we should cancel the specific node, but Suspend/Resume is heavy.
+                                // Simplest way: Close/Recreate context? No.
+                                // We just let the current tiny chunk finish (it's small) and queue is empty now.
+                                // Better: suspend immediately?
+                                if (audioContextRef.current?.state === 'running') {
+                                    audioContextRef.current.suspend().then(() => audioContextRef.current?.resume());
+                                }
+
+                                setIsSpeaking(false);
+                            }
                         } else if (json.type === 'config') {
                             // Server tells us the sample rate
                             if (json.sample_rate) {
