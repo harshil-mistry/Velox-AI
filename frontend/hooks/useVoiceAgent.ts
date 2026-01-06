@@ -18,6 +18,7 @@ export function useVoiceAgent(serverUrl: string, token: string, ttsProvider: 'de
     const audioQueueRef = useRef<Float32Array[]>([]);
     const nextStartTimeRef = useRef(0);
 
+
     // Keep ttsProvider up to date in the connect callback
     // Ideally, changing ttsProvider should trigger disconnect -> reconnect or just be passed to connect
 
@@ -85,7 +86,7 @@ export function useVoiceAgent(serverUrl: string, token: string, ttsProvider: 'de
                 }
             });
 
-            const ctx = new AudioContext({ sampleRate: 16000 });
+            const ctx = new AudioContext({ sampleRate: 16000, latencyHint: 'interactive' });
             await ctx.audioWorklet.addModule('/audio-processor.js');
 
             const source = ctx.createMediaStreamSource(stream);
@@ -137,16 +138,7 @@ export function useVoiceAgent(serverUrl: string, token: string, ttsProvider: 'de
         const chunk = audioQueueRef.current.shift()!;
 
         // Use state 'sampleRate' OR access it via a ref if state isn't updating fast enough within callback
-        // Since schedule functions runs often, using current state might be tricky if it changes mid-stream?
-        // Actually, config comes at start. So it should be fine. 
-        // NOTE: We need to ensure we use the 'latest' sampleRate.
-        // But inside this closure, sampleRate might be stale if not careful.
-        // Let's rely on the server validation. Ideally, we should use a Ref for sampleRate.
-
-        // Ref-based access for safety
-        // But for React simplicity here, we assume user won't change it mid-call (must disconnect first).
-
-        const audioBuffer = ctx.createBuffer(1, chunk.length, sampleRateRef.current); // Dynamic Rate via Ref
+        const audioBuffer = ctx.createBuffer(1, chunk.length, sampleRateRef.current);
         audioBuffer.getChannelData(0).set(chunk);
 
         const source = ctx.createBufferSource();

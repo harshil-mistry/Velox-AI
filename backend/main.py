@@ -43,7 +43,7 @@ app.add_middleware(
 
 # Constants
 TTS_RATE = 24000
-SILENCE_TIMEOUT = 1.0
+SILENCE_TIMEOUT = 0.8
 
 # --- Shared Logic (Ported from Main Test) ---
 
@@ -180,43 +180,45 @@ async def run_llm_and_tts(text: str, websocket: WebSocket, tts_provider: str, st
             sentence_buffer = ""
             full_response = "" # Track full response for history
             punctuation = {'.', '?', '!', ':', ';'} 
+            
+            # Reuse session for efficiency
+            async with aiohttp.ClientSession() as session:
 
-            async def speak(text_chunk):
-                if not text_chunk.strip(): return
-                
-                if tts_provider == "piper":
-                    await run_piper_tts(text_chunk, websocket)
-                else:
-                    # Deepgram Logic
-                    await websocket.send_json({"type": "transcript", "role": "assistant", "content": text_chunk})
+                async def speak(text_chunk):
+                    if not text_chunk.strip(): return
                     
-                    url = f"https://api.deepgram.com/v1/speak?model=aura-asteria-en&encoding=linear16&sample_rate={TTS_RATE_DEEPGRAM}&container=none"
-                    headers = {"Authorization": f"Token {DEEPGRAM_API_KEY}", "Content-Type": "application/json"}
-                    payload = {"text": text_chunk}
+                    if tts_provider == "piper":
+                        await run_piper_tts(text_chunk, websocket)
+                    else:
+                        # Deepgram Logic
+                        await websocket.send_json({"type": "transcript", "role": "assistant", "content": text_chunk})
+                        
+                        url = f"https://api.deepgram.com/v1/speak?model=aura-asteria-en&encoding=linear16&sample_rate={TTS_RATE_DEEPGRAM}&container=none"
+                        headers = {"Authorization": f"Token {DEEPGRAM_API_KEY}", "Content-Type": "application/json"}
+                        payload = {"text": text_chunk}
 
-                    try:
-                        async with aiohttp.ClientSession() as session:
+                        try:
                             async with session.post(url, headers=headers, json=payload) as response:
                                 if response.status == 200:
-                                    async for chunk in response.content.iter_chunked(1024):
+                                    async for chunk in response.content.iter_chunked(8192):
                                         if chunk: 
                                             await websocket.send_bytes(chunk)
                                 else:
                                     logger.error(f"TTS Error: {await response.text()}")
-                    except Exception as e:
-                        logger.error(f"TTS Exception: {e}")
+                        except Exception as e:
+                            logger.error(f"TTS Exception: {e}")
 
-            for chunk in stream:
-                token = chunk.choices[0].delta.content
-                if token:
-                    sentence_buffer += token
-                    full_response += token
-                    if any(p in token for p in punctuation):
-                        await speak(sentence_buffer)
-                        sentence_buffer = ""
-            
-            if sentence_buffer:
-                await speak(sentence_buffer)
+                for chunk in stream:
+                    token = chunk.choices[0].delta.content
+                    if token:
+                        sentence_buffer += token
+                        full_response += token
+                        if any(p in token for p in punctuation):
+                            await speak(sentence_buffer)
+                            sentence_buffer = ""
+                
+                if sentence_buffer:
+                    await speak(sentence_buffer)
             
             # 3. Update History with Assistant Response
             if full_response.strip():
