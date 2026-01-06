@@ -13,6 +13,7 @@ export function useVoiceAgent(serverUrl: string, token: string, ttsProvider: 'de
     const audioContextRef = useRef<AudioContext | null>(null);
     const workletNodeRef = useRef<AudioWorkletNode | null>(null);
     const sourceNodeRef = useRef<MediaStreamAudioSourceNode | null>(null);
+    const activeSourceNodesRef = useRef<AudioBufferSourceNode[]>([]); // Track ALL playing nodes
 
     // Audio Queue for playback
     const audioQueueRef = useRef<Float32Array[]>([]);
@@ -57,13 +58,19 @@ export function useVoiceAgent(serverUrl: string, token: string, ttsProvider: 'de
                                 audioQueueRef.current = [];
                                 nextStartTimeRef.current = 0;
 
-                                // 2. Stop Current Audio (Suspend/Resume or just let it finish ~ms)
-                                // Ideally, we should cancel the specific node, but Suspend/Resume is heavy.
-                                // Simplest way: Close/Recreate context? No.
-                                // We just let the current tiny chunk finish (it's small) and queue is empty now.
-                                // Better: suspend immediately?
-                                if (audioContextRef.current?.state === 'running') {
-                                    audioContextRef.current.suspend().then(() => audioContextRef.current?.resume());
+                                // 2. Stop ALL Current Audio
+                                activeSourceNodesRef.current.forEach(node => {
+                                    try {
+                                        node.stop();
+                                    } catch (e) {
+                                        // Ignore
+                                    }
+                                });
+                                activeSourceNodesRef.current = [];
+
+                                // Reset timing
+                                if (audioContextRef.current) {
+                                    nextStartTimeRef.current = audioContextRef.current.currentTime;
                                 }
 
                                 setIsSpeaking(false);
@@ -168,6 +175,14 @@ export function useVoiceAgent(serverUrl: string, token: string, ttsProvider: 'de
 
         source.start(startTime);
         nextStartTimeRef.current = startTime + audioBuffer.duration;
+
+
+        // Track node and cleanup on end
+        activeSourceNodesRef.current.push(source);
+        source.onended = () => {
+            // Remove this specific node from the tracking array
+            activeSourceNodesRef.current = activeSourceNodesRef.current.filter(n => n !== source);
+        };
     };
 
     // Helper
