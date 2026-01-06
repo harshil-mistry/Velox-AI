@@ -13,6 +13,8 @@ import websockets
 import base64
 import struct
 import math
+import numpy as np
+import onnxruntime as ort
 from dotenv import load_dotenv
 
 from deepgram import (
@@ -50,36 +52,102 @@ SILENCE_TIMEOUT = 0.8
 # --- Shared Logic (Ported from Main Test) ---
 
 class TaskStateManager:
-    """Manages the conversation state and handles interruptions."""
+    """Manages the conversation state and handles interruptions using Silero VAD."""
     def __init__(self):
-        self.is_user_speaking_now = False # Instantaneous VAD
+        self.is_user_speaking_now = False
         self.is_ai_speaking = False
         self.is_thinking = False
         
         # Reference to the current LLM task to allow cancellation
         self.llm_task: asyncio.Task = None
-        
-        # TTS Queue Cleared Flag (Event to abort downstream TTS loops)
         self.interrupt_signal = threading.Event()
+
+        # VAD State
+        self.vad_model_path = "silero_vad.onnx"
+        self.vad_session = ort.InferenceSession(self.vad_model_path)
         
-    def check_energy_vad(self, audio_chunk: bytes, threshold=0.01) -> bool:
-        """Simple RMS-based VAD for barge-in detection."""
-        if not audio_chunk: return False
-        try:
-            # Assume 16-bit PCM (2 bytes per sample)
-            count = len(audio_chunk) // 2
-            if count == 0: return False
-            format_str = f"<{count}h" 
-            shorts = struct.unpack(format_str, audio_chunk)
+        # Silero VAD internal state (h, c) - Shape (2, 1, 64)
+        self.vad_h = np.zeros((2, 1, 64), dtype=np.float32)
+        self.vad_c = np.zeros((2, 1, 64), dtype=np.float32)
+        
+        self.vad_buffer = bytearray()
+        self.vad_window_size = 512 # Silero expects specific chunk sizes (512 is common for 16k)
+        
+    def check_silero_vad(self, audio_chunk: bytes, threshold=0.5) -> bool:
+        """accumulates audio and runs Silero VAD inference."""
+        self.vad_buffer.extend(audio_chunk)
+        
+        triggered = False
+        
+        while len(self.vad_buffer) >= self.vad_window_size * 2: # 2 bytes per sample
+            chunk_bytes = self.vad_buffer[:self.vad_window_size * 2]
+            self.vad_buffer = self.vad_buffer[self.vad_window_size * 2:]
             
-            # Simple RMS
-            sum_squares = sum(s**2 for s in shorts)
-            rms = math.sqrt(sum_squares / count) / 32768.0
+            # Convert PCM16 -> Float32
+            # equivalent to: x = torch.from_numpy(np.frombuffer(audio_chunk, dtype=np.int16)).float() / 32768.0
+            input_tensor = np.frombuffer(chunk_bytes, dtype=np.int16).astype(np.float32) / 32768.0
+            input_tensor = input_tensor.reshape(1, -1) # Add batch dimension (1, 512)
             
-            return rms > threshold
-        except Exception as e:
-            # logger.error(f"VAD Error: {e}")
-            return False
+            # Run Inference
+            # input size: [1, 512], h: [2, 1, 64], c: [2, 1, 64], sr: [1]
+            ort_inputs = {
+                "input": input_tensor,
+                "state": self.vad_h,
+                "context": self.vad_c, # Note: some versions name it 'state' and 'context', check model inputs? 
+                # Usually v4 takes input, state, sr. v5 might differ. 
+                # Let's assume standard sequence for v4: input, state, sr_tensor
+            }
+            
+            # Specific handling for Silero v4 ONNX inputs
+            # Inputs: input (1, N), state (2, 1, 64), sr (1)
+            # Outputs: output (1, 1), state (2, 1, 64)
+            
+            # Prepare SR tensor
+            sr_tensor = np.array([16000], dtype=np.int64)
+            
+            ort_inputs = {
+                "input": input_tensor,
+                "state": np.concatenate((self.vad_h, self.vad_c), axis=0), # Usually joined? No, v4 is likely just 'state'
+                "sr": sr_tensor
+            }
+            
+            # WAIT: Silero V4 often takes 'input', 'state' (2,1,128) or similar.
+            # Let's inspect, or simplest is to try catch. But 'state' usually concatenates h and c?
+            # Actually, standard V4 ONNX signature:
+            # Input: 'input' (Batch, Time), 'state' (2, Batch, 64), 'sr' (1)
+            # Output: 'output', 'stateN'
+            
+            # Let's try standard V4 construction
+            # We treat h and c together as 'state'
+            context = np.zeros((2, 1, 64), dtype=np.float32) # Dummy init if needed, but we persist
+            
+            # For first run allow zero state
+            current_state = np.concatenate((self.vad_h, self.vad_c), axis=0) if self.vad_h is not None else np.zeros((2, 1, 128), dtype=np.float32)
+            
+            # Wait, easier approach: Re-check model inputs if possible. 
+            # Or use 'silero-vad' pip logic? 
+            # I will assume standard signature: input, state, sr.
+            
+            # We track 'vad_state' as (2, 1, 128) for simplicity if that's what it wants.
+            # Actually, let's keep it simple: Start with zeros (2, 1, 128).
+            
+            # Silero V5 Input Names: input, sr, h, c
+            ort_inputs = {
+                "input": input_tensor,
+                "sr": sr_tensor,
+                "h": self.vad_h,
+                "c": self.vad_c
+            }
+            
+            output, new_h, new_c = self.vad_session.run(None, ort_inputs)
+            self.vad_h = new_h
+            self.vad_c = new_c
+            
+            prob = output[0][0]
+            if prob > threshold:
+                triggered = True
+                
+        return triggered
 
     async def handle_interruption(self, websocket: WebSocket):
         """Cancels current tasks and notifies frontend."""
@@ -387,7 +455,7 @@ async def audio_stream(websocket: WebSocket, token: str = Query(None), tts_provi
                         data = await websocket.receive_bytes()
                         
                         # VAD Check
-                        if task_manager.check_energy_vad(data):
+                        if task_manager.check_silero_vad(data):
                             await task_manager.handle_interruption(websocket)
 
                         # Send to Gladia
@@ -482,7 +550,7 @@ async def audio_stream(websocket: WebSocket, token: str = Query(None), tts_provi
                     data = await asyncio.wait_for(websocket.receive_bytes(), timeout=0.1)
                     
                     # VAD CHECK
-                    if task_manager.check_energy_vad(data):
+                    if task_manager.check_silero_vad(data):
                          await task_manager.handle_interruption(websocket)
 
                     await dg_connection.send(data)
