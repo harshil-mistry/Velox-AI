@@ -270,9 +270,14 @@ async def run_piper_tts(text: str, websocket: WebSocket, model_path: str):
         logger.error(f"Piper binary not found at {PIPER_BINARY}")
         return
 
+    ESPEAK_DATA = os.path.join(BASE_DIR, "piper", "espeak-ng-data")
+    
+    logger.info(f"Piper: Generating audio for '{text[:20]}...' using model: {model_path}")
+    
     command = [
         PIPER_BINARY,
         "--model", model_path,
+        "--espeak_data", ESPEAK_DATA,
         "--output-raw",
     ]
 
@@ -280,6 +285,7 @@ async def run_piper_tts(text: str, websocket: WebSocket, model_path: str):
     total_bytes = 0
 
     try:
+        logger.info(f"Piper Command: {' '.join(command)}")
         # Create subprocess
         process = await asyncio.create_subprocess_exec(
             *command,
@@ -613,7 +619,7 @@ async def audio_stream(websocket: WebSocket, token: str = Query(None), tts_provi
                                 # Native Endpointing Trigger
                                 text = silence_manager.get_if_silence() # This cleans the buffer
                                 if text:
-                                    # Native Endpointing Trigger
+                                    logger.info("Deepgram UtteranceEnd -> Triggering LLM")
                                     await task_manager.schedule_llm_task(
                                         run_llm_and_tts(text, websocket, tts_provider, piper_voice_path, task_manager, conversation_history)
                                     )
