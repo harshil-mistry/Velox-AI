@@ -8,6 +8,21 @@ export default function Home() {
   const [sttProvider, setSttProvider] = useState<'deepgram' | 'gladia'>('deepgram');
   const [sttLanguage, setSttLanguage] = useState<string>('english');
 
+  // Piper Config
+  const [voices, setVoices] = useState<{ id: string, name: string }[]>([]);
+  const [ttsVoice, setTtsVoice] = useState<string>('');
+
+  useEffect(() => {
+    // Fetch voices on mount (client-side)
+    fetch(`http://${window.location.hostname}:8000/voices`)
+      .then(res => res.json())
+      .then(data => {
+        setVoices(data);
+        if (data.length > 0) setTtsVoice(data[0].id);
+      })
+      .catch(err => console.error("Failed to fetch voices", err));
+  }, []);
+
   // Determine WS URL dynamically (client-side only)
   const [wsUrl, setWsUrl] = useState('');
 
@@ -20,6 +35,7 @@ export default function Home() {
     wsUrl,
     'velox-secret-123',
     ttsProvider,
+    ttsVoice,
     sttProvider,
     sttLanguage
   );
@@ -94,6 +110,24 @@ export default function Home() {
               <option value="piper">Piper (Local)</option>
             </select>
           </div>
+
+          {/* Piper Voice Selector */}
+          {ttsProvider === 'piper' && (
+            <div>
+              <label className="block text-xs font-bold text-gray-400 mb-1">Piper Voice</label>
+              <select
+                disabled={status === 'connected'}
+                value={ttsVoice}
+                onChange={(e) => setTtsVoice(e.target.value)}
+                className="w-full bg-gray-800 border border-gray-600 rounded px-2 py-1 text-sm text-white focus:outline-none focus:border-blue-500 disabled:opacity-50"
+              >
+                {voices.length === 0 && <option>No voices found</option>}
+                {voices.map(v => (
+                  <option key={v.id} value={v.id}>{v.name}</option>
+                ))}
+              </select>
+            </div>
+          )}
         </div>
 
         <div className={`w-32 h-32 rounded-full flex items-center justify-center transition-all duration-300 ${isSpeaking ? 'bg-green-500 animate-pulse scale-110' : 'bg-gray-700'}`}>

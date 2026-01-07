@@ -226,22 +226,53 @@ import subprocess
 TTS_RATE_DEEPGRAM = 24000
 TTS_RATE_PIPER = 22050
 
-# Piper Configuration (Hardcoded for Demo)
-PIPER_PATH = r"d:\piper\piper.exe"
-PIPER_MODEL_PATH = r"d:\piper\en_US-hfc_female-medium.onnx"
+import glob
+
+# Piper Configuration
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+PIPER_BINARY = os.path.join(BASE_DIR, "piper", "piper.exe")
+PIPER_VOICES_DIR = os.path.join(BASE_DIR, "piper", "voices")
+
+def get_piper_voices():
+    """Recursively finds all .onnx voice models in the voices directory."""
+    voices = []
+    # Recursive glob for .onnx files
+    pattern = os.path.join(PIPER_VOICES_DIR, "**", "*.onnx")
+    for file_path in glob.glob(pattern, recursive=True):
+        # Create readable ID/Name
+        # ID = Relative path from voices dir (e.g., "usa\en_US-amy-medium.onnx")
+        rel_path = os.path.relpath(file_path, PIPER_VOICES_DIR)
+        
+        # Name = Filename without extension (e.g., "en_US-amy-medium")
+        name = os.path.splitext(os.path.basename(file_path))[0]
+        
+        voices.append({
+            "id": rel_path,
+            "name": name,
+            "path": file_path
+        })
+    return voices
+
+@app.get("/voices")
+def list_voices():
+    return get_piper_voices()
 
 # ... (Shared Logic SilenceManager - Unchanged)
 
-async def run_piper_tts(text: str, websocket: WebSocket):
+async def run_piper_tts(text: str, websocket: WebSocket, model_path: str):
     """Streams text to Piper binary and audio to WebSocket."""
     if not text.strip(): return
     
     # Notify Client: AI is Speaking (Text)
     await websocket.send_json({"type": "transcript", "role": "assistant", "content": text})
 
+    if not os.path.exists(PIPER_BINARY):
+        logger.error(f"Piper binary not found at {PIPER_BINARY}")
+        return
+
     command = [
-        PIPER_PATH,
-        "--model", PIPER_MODEL_PATH,
+        PIPER_BINARY,
+        "--model", model_path,
         "--output-raw",
     ]
 
@@ -293,7 +324,7 @@ async def run_piper_tts(text: str, websocket: WebSocket):
         logger.error(f"Piper Exception: {e}")
 
 
-async def run_llm_and_tts(text: str, websocket: WebSocket, tts_provider: str, task_manager: TaskStateManager, history: list):
+async def run_llm_and_tts(text: str, websocket: WebSocket, tts_provider: str, tts_voice_path: str, task_manager: TaskStateManager, history: list):
     """Pipeline: Text -> Groq (Stream) -> Sentence Buffer -> TTS (Stream) -> WebSocket"""
     
     # 1. Update History with User Input
@@ -343,7 +374,7 @@ async def run_llm_and_tts(text: str, websocket: WebSocket, tts_provider: str, ta
                     task_manager.is_thinking = False # Thinking phase done
                     
                     if tts_provider == "piper":
-                        await run_piper_tts(text_chunk, websocket) # Note: Piper needs update strictly speaking, but for now we assume it finishes fast or we just kill task.
+                        await run_piper_tts(text_chunk, websocket, tts_voice_path)
                     else:
                         # Deepgram Logic
                         await websocket.send_json({"type": "transcript", "role": "assistant", "content": text_chunk})
@@ -403,7 +434,7 @@ def verify_token(token: str):
 # --- WebSocket Endpoint ---
 
 @app.websocket("/ws/stream")
-async def audio_stream(websocket: WebSocket, token: str = Query(None), tts_provider: str = Query("deepgram"), stt_provider: str = Query("deepgram"), stt_language: str = Query("english")):
+async def audio_stream(websocket: WebSocket, token: str = Query(None), tts_provider: str = Query("deepgram"), tts_voice: str = Query(None), stt_provider: str = Query("deepgram"), stt_language: str = Query("english")):
     # 1. Verification
     if not verify_token(token):
         logger.warning(f"Unauthorized connection attempt with token: {token}")
@@ -420,6 +451,26 @@ async def audio_stream(websocket: WebSocket, token: str = Query(None), tts_provi
     silence_manager = SilenceManager()
     task_manager = TaskStateManager() # NEW: State Manager
     conversation_history = []
+    
+    # Resolve Voice Path for Piper
+    piper_voice_path = None
+    if tts_provider == "piper":
+        voices = get_piper_voices()
+        if tts_voice:
+             # Find matching voice by ID
+             found = next((v for v in voices if v["id"] == tts_voice), None)
+             if found:
+                 piper_voice_path = found["path"]
+        
+        if not piper_voice_path and voices:
+            # Default to first
+            piper_voice_path = voices[0]["path"]
+            logger.info(f"Defaulting to Piper Voice: {voices[0]['name']}")
+            
+        if not piper_voice_path:
+            logger.error("No Piper voices found!")
+            await websocket.close(code=4002) # Custom code for misconfig
+            return
     
     # 3. STT Setup (Gladia or Deepgram)
     
@@ -463,7 +514,7 @@ async def audio_stream(websocket: WebSocket, token: str = Query(None), tts_provi
                                     
                                     # Trigger LLM Immediately on Final (Endpointing)
                                     await task_manager.schedule_llm_task(
-                                        run_llm_and_tts(text, websocket, tts_provider, task_manager, conversation_history)
+                                        run_llm_and_tts(text, websocket, tts_provider, piper_voice_path, task_manager, conversation_history)
                                     )
                                 else:
                                     print(f"User (Gladia Partial): {text}") # Print partials
@@ -562,9 +613,9 @@ async def audio_stream(websocket: WebSocket, token: str = Query(None), tts_provi
                                 # Native Endpointing Trigger
                                 text = silence_manager.get_if_silence() # This cleans the buffer
                                 if text:
-                                    logger.info("Deepgram UtteranceEnd -> Triggering LLM")
+                                    # Native Endpointing Trigger
                                     await task_manager.schedule_llm_task(
-                                        run_llm_and_tts(text, websocket, tts_provider, task_manager, conversation_history)
+                                        run_llm_and_tts(text, websocket, tts_provider, piper_voice_path, task_manager, conversation_history)
                                     )
 
                     except Exception as e:
