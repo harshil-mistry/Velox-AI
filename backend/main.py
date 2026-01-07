@@ -603,10 +603,14 @@ async def audio_stream(websocket: WebSocket, token: str = Query(None), tts_provi
     # Resolve TTS Speed to Scale
     # Piper: Scale < 1.0 is FASTER, Scale > 1.0 is SLOWER
     length_scale = 1.0
-    if tts_speed == "fast":
+    if tts_speed == "super-fast":
+        length_scale = 0.6
+    elif tts_speed == "fast":
         length_scale = 0.8
     elif tts_speed == "slow":
         length_scale = 1.2
+    elif tts_speed == "super-slow":
+        length_scale = 1.4
 
 
     silence_manager = SilenceManager()

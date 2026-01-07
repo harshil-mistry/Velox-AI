@@ -208,7 +208,7 @@ export default function Home() {
                   <div className="space-y-1.5 col-span-2">
                     <label className="text-[10px] font-semibold text-zinc-500 uppercase tracking-wide">Speed</label>
                     <div className="flex bg-black/40 rounded-lg border border-zinc-800 p-1">
-                      {['slow', 'normal', 'fast'].map((s) => (
+                      {['super-slow', 'slow', 'normal', 'fast', 'super-fast'].map((s) => (
                         <button
                           key={s}
                           onClick={() => setTtsSpeed(s)}
@@ -218,7 +218,7 @@ export default function Home() {
                             : 'text-zinc-500 hover:text-zinc-300'
                             }`}
                         >
-                          {s.charAt(0).toUpperCase() + s.slice(1)}
+                          {s.split('-').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ')}
                         </button>
                       ))}
                     </div>
