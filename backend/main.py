@@ -227,11 +227,57 @@ TTS_RATE_DEEPGRAM = 24000
 TTS_RATE_PIPER = 22050
 
 import glob
+import zipfile
+import io
+import shutil
 
 # Piper Configuration
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-PIPER_BINARY = os.path.join(BASE_DIR, "piper", "piper.exe")
-PIPER_VOICES_DIR = os.path.join(BASE_DIR, "piper", "voices")
+PIPER_DIR = os.path.join(BASE_DIR, "piper")
+PIPER_BINARY = os.path.join(PIPER_DIR, "piper.exe")
+PIPER_VOICES_DIR = os.path.join(PIPER_DIR, "voices")
+ESPEAK_DATA = os.path.join(PIPER_DIR, "espeak-ng-data")
+
+PIPER_READY = False # Global Flag
+
+async def install_piper():
+    """Background task to download and set up Piper dependencies."""
+    global PIPER_READY
+    
+    # 1. Check if valid
+    if os.path.exists(PIPER_BINARY) and os.path.exists(ESPEAK_DATA):
+        logger.info("Piper dependencies found locally.")
+        PIPER_READY = True
+        return
+
+    logger.info("Piper dependencies missing. Starting background download...")
+    
+    url = "https://github.com/rhasspy/piper/releases/download/2023.11.14-2/piper_windows_amd64.zip"
+    
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url) as resp:
+                if resp.status == 200:
+                    data = await resp.read()
+                    
+                    # Extract
+                    logger.info("Download complete. Extracting Piper...")
+                    with zipfile.ZipFile(io.BytesIO(data)) as z:
+                        # The zip contains a root folder 'piper/'. We want contents in 'backend/piper/'
+                        # So we extract to 'backend/' (BASE_DIR)
+                        z.extractall(BASE_DIR)
+                        
+                    logger.info("Piper installation complete!")
+                    PIPER_READY = True
+                else:
+                    logger.error(f"Failed to download Piper: HTTP {resp.status}")
+    except Exception as e:
+        logger.error(f"Piper Installation Error: {e}")
+
+@app.on_event("startup")
+async def startup_event():
+    asyncio.create_task(install_piper())
+
 
 def get_piper_voices():
     """Recursively finds all .onnx voice models in the voices directory."""
@@ -266,13 +312,20 @@ async def run_piper_tts(text: str, websocket: WebSocket, model_path: str):
     # Notify Client: AI is Speaking (Text)
     await websocket.send_json({"type": "transcript", "role": "assistant", "content": text})
 
-    if not os.path.exists(PIPER_BINARY):
-        logger.error(f"Piper binary not found at {PIPER_BINARY}")
+    if not PIPER_READY:
+        logger.warning("Piper is not ready yet (Installing/Missing).")
+        # Optional: Send a status message to frontend?
+        # For now, we just skip audio generation, or maybe send a placeholder "One moment..." logic?
+        # Let's just return to avoid crashing.
         return
 
-    ESPEAK_DATA = os.path.join(BASE_DIR, "piper", "espeak-ng-data")
+    if not os.path.exists(PIPER_BINARY):
+        logger.error(f"Piper binary not found at {PIPER_BINARY} despite READY flag.")
+        return
+
+    # ESPEAK_DATA already defined globally
     
-    logger.info(f"Piper: Generating audio for '{text[:20]}...' using model: {model_path}")
+#    logger.info(f"Piper: Generating audio for '{text[:20]}...' using model: {model_path}")
     
     command = [
         PIPER_BINARY,
@@ -285,7 +338,7 @@ async def run_piper_tts(text: str, websocket: WebSocket, model_path: str):
     total_bytes = 0
 
     try:
-        logger.info(f"Piper Command: {' '.join(command)}")
+#        logger.info(f"Piper Command: {' '.join(command)}")
         # Create subprocess
         process = await asyncio.create_subprocess_exec(
             *command,
