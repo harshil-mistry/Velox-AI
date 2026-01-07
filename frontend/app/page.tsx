@@ -53,7 +53,7 @@ export default function Home() {
   }, [transcript]);
 
   return (
-    <main className="relative flex min-h-screen flex-col bg-black text-white selection:bg-orange-500/30 font-sans overflow-hidden">
+    <main className="relative flex h-screen w-screen flex-col bg-black text-white font-sans overflow-hidden selection:bg-orange-500/30">
 
       {/* Header */}
       <header className="absolute top-0 left-0 w-full p-6 z-20 flex justify-between items-center pointer-events-none">
@@ -64,25 +64,33 @@ export default function Home() {
 
         {/* Connection Status Badge */}
         <div className={`px-3 py-1 rounded-full text-xs font-medium border pointer-events-auto transition-colors duration-300 ${status === 'connected'
-            ? 'bg-green-500/10 border-green-500/20 text-green-400'
-            : status === 'error'
-              ? 'bg-red-500/10 border-red-500/20 text-red-400'
-              : 'bg-zinc-800/50 border-zinc-700 text-zinc-400'
+          ? 'bg-green-500/10 border-green-500/20 text-green-400'
+          : status === 'error'
+            ? 'bg-red-500/10 border-red-500/20 text-red-400'
+            : 'bg-zinc-800/50 border-zinc-700 text-zinc-400'
           }`}>
           {status === 'idle' ? 'Ready' : status.charAt(0).toUpperCase() + status.slice(1)}
         </div>
       </header>
 
-      {/* Transcript Area (Top/Center) */}
-      <div className="flex-1 w-full max-w-3xl mx-auto pt-24 pb-48 px-6 flex flex-col justify-end min-h-0 z-10">
+      {/* Transcript Area (Top/Center) - Elastic Height */}
+      <div className="flex-1 w-full max-w-3xl mx-auto pt-24 pb-32 px-6 flex flex-col justify-end min-h-0 z-10 relative">
         <div
           ref={scrollRef}
-          className="flex flex-col gap-6 overflow-y-auto pr-2 scrollbar-hide mask-image-flow"
+          className="
+            flex flex-col gap-6 overflow-y-auto pr-2 
+            mask-image-flow max-h-[80vh]
+            [&::-webkit-scrollbar]:w-1.5
+            [&::-webkit-scrollbar-track]:bg-zinc-900/50
+            [&::-webkit-scrollbar-thumb]:bg-orange-500/50
+            [&::-webkit-scrollbar-thumb]:rounded-full
+            [&::-webkit-scrollbar-thumb]:hover:bg-orange-500
+          "
           style={{ maskImage: 'linear-gradient(to bottom, transparent, black 10%, black)' }}
         >
           {transcript.length === 0 && (
-            <div className="text-center text-zinc-600 mt-20 flex flex-col items-center gap-4">
-              <div className="w-16 h-16 rounded-full bg-zinc-900 border border-zinc-800 flex items-center justify-center">
+            <div className="text-center text-zinc-600 mt-20 flex flex-col items-center gap-4 py-20">
+              <div className="w-16 h-16 rounded-full bg-zinc-900 border border-zinc-800 flex items-center justify-center animate-pulse">
                 <span className="text-2xl opacity-50">✨</span>
               </div>
               <p>Start conversation to begin...</p>
@@ -96,8 +104,8 @@ export default function Home() {
             >
               <div
                 className={`px-5 py-3 rounded-2xl text-[15px] leading-relaxed shadow-sm transition-all ${msg.role === 'user'
-                    ? 'bg-zinc-800 text-zinc-100 rounded-tr-sm border border-zinc-700'
-                    : 'bg-orange-950/20 text-orange-100 rounded-tl-sm border border-orange-500/20 shadow-[0_4px_20px_-10px_rgba(249,115,22,0.2)]'
+                  ? 'bg-zinc-800 text-zinc-100 rounded-tr-sm border border-zinc-700'
+                  : 'bg-orange-950/20 text-orange-100 rounded-tl-sm border border-orange-500/20 shadow-[0_4px_20px_-10px_rgba(249,115,22,0.2)]'
                   }`}
               >
                 {msg.content}
@@ -111,88 +119,103 @@ export default function Home() {
       </div>
 
       {/* Floating Navbar (Bottom) */}
-      <div className="fixed bottom-8 left-1/2 -translate-x-1/2 z-50 flex flex-col items-center w-full max-w-lg">
+      <div className="fixed bottom-8 left-1/2 -translate-x-1/2 z-50 flex flex-col items-center w-full max-w-lg px-4">
 
         {/* Settings Panel (Popup) */}
         {showSettings && (
-          <div className="mb-4 w-[90%] bg-zinc-900/90 backdrop-blur-xl border border-zinc-800 rounded-2xl p-4 shadow-2xl animate-in slide-in-from-bottom-5 fade-in duration-200">
-            <div className="flex justify-between items-center mb-4">
-              <h3 className="text-sm font-bold text-zinc-400 uppercase tracking-wider">Settings</h3>
-              <button onClick={() => setShowSettings(false)} className="text-zinc-500 hover:text-white">&times;</button>
+          <div className="mb-4 w-full bg-zinc-900/95 backdrop-blur-xl border border-zinc-800 rounded-2xl p-4 shadow-2xl animate-in slide-in-from-bottom-5 fade-in duration-200 ring-1 ring-white/5">
+            <div className="flex justify-between items-center mb-4 border-b border-zinc-800 pb-2">
+              <h3 className="text-sm font-bold text-zinc-400 uppercase tracking-wider flex items-center gap-2">
+                <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="3" /><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z" /></svg>
+                Config
+              </h3>
+              <button onClick={() => setShowSettings(false)} className="text-zinc-500 hover:text-white transition-colors">&times;</button>
             </div>
 
             <div className="grid grid-cols-2 gap-4">
               {/* STT */}
-              <div className="space-y-1">
-                <label className="text-xs text-zinc-500">Hearing (STT)</label>
-                <select
-                  disabled={status === 'connected'}
-                  value={sttProvider}
-                  onChange={(e) => setSttProvider(e.target.value as any)}
-                  className="w-full bg-black/50 border border-zinc-700 rounded-lg px-2 py-2 text-sm text-white focus:border-orange-500 outline-none"
-                >
-                  <option value="deepgram">Deepgram</option>
-                  <option value="gladia">Gladia</option>
-                </select>
+              <div className="space-y-1.5">
+                <label className="text-[10px] font-semibold text-zinc-500 uppercase tracking-wide">Ears (STT)</label>
+                <div className="relative">
+                  <select
+                    disabled={status === 'connected'}
+                    value={sttProvider}
+                    onChange={(e) => setSttProvider(e.target.value as any)}
+                    className="w-full bg-black/40 border border-zinc-800 rounded-lg pl-3 pr-8 py-2.5 text-xs text-zinc-200 focus:border-orange-500/50 focus:ring-1 focus:ring-orange-500/20 outline-none appearance-none transition-all disabled:opacity-50"
+                  >
+                    <option value="deepgram">Deepgram</option>
+                    <option value="gladia">Gladia</option>
+                  </select>
+                  <div className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none text-zinc-600">▼</div>
+                </div>
               </div>
 
               {/* TTS */}
-              <div className="space-y-1">
-                <label className="text-xs text-zinc-500">Voice (TTS)</label>
-                <select
-                  disabled={status === 'connected'}
-                  value={ttsProvider}
-                  onChange={(e) => setTtsProvider(e.target.value as any)}
-                  className="w-full bg-black/50 border border-zinc-700 rounded-lg px-2 py-2 text-sm text-white focus:border-orange-500 outline-none"
-                >
-                  <option value="deepgram">Deepgram Aura</option>
-                  <option value="piper">Piper (Local)</option>
-                </select>
+              <div className="space-y-1.5">
+                <label className="text-[10px] font-semibold text-zinc-500 uppercase tracking-wide">Voice (TTS)</label>
+                <div className="relative">
+                  <select
+                    disabled={status === 'connected'}
+                    value={ttsProvider}
+                    onChange={(e) => setTtsProvider(e.target.value as any)}
+                    className="w-full bg-black/40 border border-zinc-800 rounded-lg pl-3 pr-8 py-2.5 text-xs text-zinc-200 focus:border-orange-500/50 focus:ring-1 focus:ring-orange-500/20 outline-none appearance-none transition-all disabled:opacity-50"
+                  >
+                    <option value="deepgram">Deepgram Aura</option>
+                    <option value="piper">Piper (Local)</option>
+                  </select>
+                  <div className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none text-zinc-600">▼</div>
+                </div>
               </div>
 
               {/* Gladia Language - Conditional */}
               {sttProvider === 'gladia' && (
-                <div className="space-y-1 col-span-2">
-                  <label className="text-xs text-zinc-500">Data Language</label>
-                  <select
-                    disabled={status === 'connected'}
-                    value={sttLanguage}
-                    onChange={(e) => setSttLanguage(e.target.value)}
-                    className="w-full bg-black/50 border border-zinc-700 rounded-lg px-2 py-2 text-sm text-white focus:border-orange-500 outline-none"
-                  >
-                    <option value="english">English</option>
-                    <option value="gujarati">Gujarati</option>
-                    <option value="hindi">Hindi</option>
-                  </select>
+                <div className="space-y-1.5 col-span-2">
+                  <label className="text-[10px] font-semibold text-zinc-500 uppercase tracking-wide">Language</label>
+                  <div className="relative">
+                    <select
+                      disabled={status === 'connected'}
+                      value={sttLanguage}
+                      onChange={(e) => setSttLanguage(e.target.value)}
+                      className="w-full bg-black/40 border border-zinc-800 rounded-lg pl-3 pr-8 py-2.5 text-xs text-zinc-200 focus:border-orange-500/50 focus:ring-1 focus:ring-orange-500/20 outline-none appearance-none transition-all disabled:opacity-50"
+                    >
+                      <option value="english">English</option>
+                      <option value="gujarati">Gujarati</option>
+                      <option value="hindi">Hindi</option>
+                    </select>
+                    <div className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none text-zinc-600">▼</div>
+                  </div>
                 </div>
               )}
 
               {/* Piper Voice - Conditional */}
               {ttsProvider === 'piper' && (
                 <>
-                  <div className="space-y-1 col-span-2">
-                    <label className="text-xs text-zinc-500">Model</label>
-                    <select
-                      disabled={status === 'connected'}
-                      value={ttsVoice}
-                      onChange={(e) => setTtsVoice(e.target.value)}
-                      className="w-full bg-black/50 border border-zinc-700 rounded-lg px-2 py-2 text-sm text-white focus:border-orange-500 outline-none"
-                    >
-                      {voices.map(v => <option key={v.id} value={v.id}>{v.name}</option>)}
-                    </select>
+                  <div className="space-y-1.5 col-span-2">
+                    <label className="text-[10px] font-semibold text-zinc-500 uppercase tracking-wide">Model</label>
+                    <div className="relative">
+                      <select
+                        disabled={status === 'connected'}
+                        value={ttsVoice}
+                        onChange={(e) => setTtsVoice(e.target.value)}
+                        className="w-full bg-black/40 border border-zinc-800 rounded-lg pl-3 pr-8 py-2.5 text-xs text-zinc-200 focus:border-orange-500/50 focus:ring-1 focus:ring-orange-500/20 outline-none appearance-none transition-all disabled:opacity-50"
+                      >
+                        {voices.map(v => <option key={v.id} value={v.id}>{v.name}</option>)}
+                      </select>
+                      <div className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none text-zinc-600">▼</div>
+                    </div>
                   </div>
 
-                  <div className="space-y-1 col-span-2">
-                    <label className="text-xs text-zinc-500">Speed</label>
-                    <div className="flex bg-black/50 rounded-lg border border-zinc-700 p-1">
+                  <div className="space-y-1.5 col-span-2">
+                    <label className="text-[10px] font-semibold text-zinc-500 uppercase tracking-wide">Speed</label>
+                    <div className="flex bg-black/40 rounded-lg border border-zinc-800 p-1">
                       {['slow', 'normal', 'fast'].map((s) => (
                         <button
                           key={s}
                           onClick={() => setTtsSpeed(s)}
                           disabled={status === 'connected'}
-                          className={`flex-1 py-1 text-xs rounded transition-all ${ttsSpeed === s
-                              ? 'bg-zinc-700 text-white shadow-sm'
-                              : 'text-zinc-500 hover:text-zinc-300'
+                          className={`flex-1 py-1.5 text-xs rounded-md transition-all font-medium ${ttsSpeed === s
+                            ? 'bg-zinc-700 text-white shadow-sm'
+                            : 'text-zinc-500 hover:text-zinc-300'
                             }`}
                         >
                           {s.charAt(0).toUpperCase() + s.slice(1)}
@@ -207,14 +230,17 @@ export default function Home() {
         )}
 
         {/* Floating Bar Container */}
-        <div className="flex items-center gap-4 bg-zinc-900/80 backdrop-blur-xl border border-zinc-800/50 p-2 pl-4 rounded-full shadow-[0_0_40px_-10px_rgba(0,0,0,0.5)] transition-all hover:border-zinc-700 hover:bg-zinc-900">
+        <div className="flex items-center gap-4 bg-zinc-900/90 backdrop-blur-xl border border-white/5 p-2 pl-4 rounded-full shadow-[0_20px_40px_-10px_rgba(0,0,0,0.8)] transition-all hover:border-white/10 hover:bg-zinc-900 ring-1 ring-black">
 
           {/* Settings Toggle */}
           <button
             onClick={() => setShowSettings(!showSettings)}
-            className={`p-3 rounded-full transition-all ${showSettings ? 'bg-zinc-800 text-white' : 'text-zinc-400 hover:bg-zinc-800/50 hover:text-white'}`}
+            className={`p-3 rounded-full transition-all duration-300 ${showSettings
+              ? 'bg-zinc-800 text-white shadow-inner'
+              : 'text-zinc-400 hover:bg-zinc-800/50 hover:text-white'
+              }`}
           >
-            <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.1a2 2 0 0 1-1-1.72v-.51a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z" /><circle cx="12" cy="12" r="3" /></svg>
+            <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="3" /><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z" /></svg>
           </button>
 
           <div className="h-6 w-px bg-zinc-800"></div>
@@ -223,10 +249,10 @@ export default function Home() {
           <button
             onClick={status === 'idle' || status === 'error' ? connect : disconnect}
             className={`
-                group relative flex items-center justify-center gap-2 px-6 py-3 rounded-full font-bold transition-all duration-300 min-w-[140px]
+                group relative flex items-center justify-center gap-2 px-8 py-3.5 rounded-full font-bold transition-all duration-300 min-w-[160px] shadow-lg
                 ${status === 'idle' || status === 'error'
-                ? 'bg-zinc-100 text-black hover:bg-white hover:shadow-[0_0_20px_rgba(255,255,255,0.3)]'
-                : 'bg-red-500/10 text-red-500 border border-red-500/50 hover:bg-red-500/20'
+                ? 'bg-zinc-100 text-black hover:bg-white hover:scale-105 hover:shadow-[0_0_30px_rgba(255,255,255,0.2)]'
+                : 'bg-red-500/10 text-red-400 border border-red-500/30 hover:bg-red-500/20 hover:border-red-500/50'
               }
               `}
           >
@@ -237,7 +263,7 @@ export default function Home() {
               </>
             ) : (
               <>
-                <span className="w-2 h-2 rounded-full bg-red-500"></span>
+                <span className="w-2 h-2 rounded-full bg-red-500 animate-pulse"></span>
                 End Call
               </>
             )}
@@ -246,10 +272,10 @@ export default function Home() {
           <div className="w-2"></div>
 
           {/* Mic Visualizer (Simple) */}
-          <div className={`p-4 rounded-full transition-all duration-300 ${isSpeaking ? 'bg-orange-500 shadow-[0_0_20px_rgba(249,115,22,0.5)] transform scale-110' : 'bg-zinc-800'}`}>
-            <a className="text-xl">
+          <div className={`p-4 rounded-full transition-all duration-500 ${isSpeaking ? 'bg-orange-500 shadow-[0_0_30px_rgba(249,115,22,0.6)] scale-110' : 'bg-zinc-800 text-zinc-500'}`}>
+            <span className="text-xl">
               {isSpeaking ? '🗣️' : '🎙️'}
-            </a>
+            </span>
           </div>
 
         </div>
