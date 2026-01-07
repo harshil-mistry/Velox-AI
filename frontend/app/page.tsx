@@ -77,15 +77,7 @@ export default function Home() {
       <div className="flex-1 w-full max-w-3xl mx-auto pt-24 pb-32 px-6 flex flex-col justify-end min-h-0 z-10 relative">
         <div
           ref={scrollRef}
-          className="
-            flex flex-col gap-6 overflow-y-auto pr-2 
-            mask-image-flow max-h-[80vh]
-            [&::-webkit-scrollbar]:w-1.5
-            [&::-webkit-scrollbar-track]:bg-zinc-900/50
-            [&::-webkit-scrollbar-thumb]:bg-orange-500/50
-            [&::-webkit-scrollbar-thumb]:rounded-full
-            [&::-webkit-scrollbar-thumb]:hover:bg-orange-500
-          "
+          className="flex flex-col gap-6 overflow-y-auto pr-2 mask-image-flow max-h-[80vh] [&::-webkit-scrollbar]:w-1.5 [&::-webkit-scrollbar-track]:bg-zinc-900/50 [&::-webkit-scrollbar-thumb]:bg-orange-500/50 [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:hover:bg-orange-500"
           style={{ maskImage: 'linear-gradient(to bottom, transparent, black 10%, black)' }}
         >
           {transcript.length === 0 && (

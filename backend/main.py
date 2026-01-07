@@ -7,22 +7,12 @@ import json
 import logging
 import threading
 import time
-import time
 import aiohttp
 import websockets
 import base64
-import struct
-import math
 import numpy as np
 import onnxruntime as ort
 from dotenv import load_dotenv
-
-from deepgram import (
-    DeepgramClient,
-    DeepgramClientOptions,
-    LiveTranscriptionEvents,
-    LiveOptions,
-)
 from groq import Groq
 
 # Setup Logging
