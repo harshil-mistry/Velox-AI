@@ -1,6 +1,30 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 
-export function useVoiceAgent(serverUrl: string, token: string, ttsProvider: 'deepgram' | 'piper', ttsVoice: string, sttProvider: 'deepgram' | 'gladia', sttLanguage: string) {
+interface UseVoiceAgentProps {
+    serverUrl: string;
+    token: string;
+    onTranscript?: (transcript: any[]) => void;
+    onStatusChange?: (status: string) => void;
+    onError?: (error: any) => void;
+    ttsProvider?: 'deepgram' | 'piper';
+    ttsVoice?: string;
+    sttProvider?: 'deepgram' | 'gladia';
+    sttLanguage?: string;
+    ttsSpeed?: string;
+}
+
+export function useVoiceAgent({
+    serverUrl,
+    token,
+    onTranscript,
+    onStatusChange,
+    onError,
+    ttsProvider = 'deepgram',
+    ttsVoice,
+    sttProvider = 'deepgram',
+    sttLanguage = 'en',
+    ttsSpeed = 'normal'
+}: UseVoiceAgentProps) {
     const [status, setStatus] = useState<'idle' | 'connecting' | 'connected' | 'error'>('idle');
     const [isSpeaking, setIsSpeaking] = useState(false);
     const [transcript, setTranscript] = useState<{ role: 'user' | 'assistant', content: string }[]>([]);
@@ -28,7 +52,7 @@ export function useVoiceAgent(serverUrl: string, token: string, ttsProvider: 'de
 
         try {
             // 1. WebSocket
-            const ws = new WebSocket(`${serverUrl}?token=${token}&tts_provider=${ttsProvider}&tts_voice=${ttsVoice}&stt_provider=${sttProvider}&stt_language=${sttLanguage}`);
+            const ws = new WebSocket(`${serverUrl}?token=${token}&tts_provider=${ttsProvider}&tts_voice=${ttsVoice || ''}&stt_provider=${sttProvider}&stt_language=${sttLanguage}&tts_speed=${ttsSpeed}`);
             ws.binaryType = 'arraybuffer';
 
             ws.onopen = () => {
@@ -139,7 +163,7 @@ export function useVoiceAgent(serverUrl: string, token: string, ttsProvider: 'de
             console.error(e);
             setStatus('error');
         }
-    }, [serverUrl, token, ttsProvider, ttsVoice, sttProvider, sttLanguage]); // Re-create if provider changes
+    }, [serverUrl, token, ttsProvider, ttsVoice, sttProvider, sttLanguage, ttsSpeed]); // Re-create if provider changes
 
     const disconnect = useCallback(() => {
         wsRef.current?.close();

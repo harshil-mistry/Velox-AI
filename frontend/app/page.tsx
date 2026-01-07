@@ -11,6 +11,7 @@ export default function Home() {
   // Piper Config
   const [voices, setVoices] = useState<{ id: string, name: string }[]>([]);
   const [ttsVoice, setTtsVoice] = useState<string>('');
+  const [ttsSpeed, setTtsSpeed] = useState<string>('normal'); // NEW
 
   useEffect(() => {
     // Fetch voices on mount (client-side)
@@ -31,14 +32,15 @@ export default function Home() {
     setWsUrl(`ws://${window.location.hostname}:8000/ws/stream`);
   }, []);
 
-  const { status, isSpeaking, transcript, connect, disconnect } = useVoiceAgent(
-    wsUrl,
-    'velox-secret-123',
+  const { status, isSpeaking, transcript, connect, disconnect } = useVoiceAgent({
+    serverUrl: wsUrl,
+    token: 'velox-secret-123',
     ttsProvider,
     ttsVoice,
     sttProvider,
-    sttLanguage
-  );
+    sttLanguage,
+    ttsSpeed // NEW
+  });
 
   const scrollRef = useRef<HTMLDivElement>(null);
 
@@ -125,6 +127,23 @@ export default function Home() {
                 {voices.map(v => (
                   <option key={v.id} value={v.id}>{v.name}</option>
                 ))}
+              </select>
+            </div>
+          )}
+
+          {/* Piper Speed Selector */}
+          {ttsProvider === 'piper' && (
+            <div>
+              <label className="block text-xs font-bold text-gray-400 mb-1">Piper Speed</label>
+              <select
+                disabled={status === 'connected'}
+                value={ttsSpeed}
+                onChange={(e) => setTtsSpeed(e.target.value)}
+                className="w-full bg-gray-800 border border-gray-600 rounded px-2 py-1 text-sm text-white focus:outline-none focus:border-blue-500 disabled:opacity-50"
+              >
+                <option value="slow">Slow</option>
+                <option value="normal">Normal</option>
+                <option value="fast">Fast</option>
               </select>
             </div>
           )}

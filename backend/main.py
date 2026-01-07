@@ -693,7 +693,7 @@ async def audio_stream(websocket: WebSocket, token: str = Query(None), tts_provi
                                     
                                     # Trigger LLM Immediately on Final (Endpointing)
                                     await task_manager.schedule_llm_task(
-                                        run_llm_and_tts(text, websocket, tts_provider, piper_voice_path, task_manager, conversation_history)
+                                        run_llm_and_tts(text, websocket, tts_provider, piper_voice_path, length_scale, task_manager, conversation_history)
                                     )
                                 else:
                                     print(f"User (Gladia Partial): {text}") # Print partials
@@ -794,7 +794,7 @@ async def audio_stream(websocket: WebSocket, token: str = Query(None), tts_provi
                                 if text:
                                     logger.info("Deepgram UtteranceEnd -> Triggering LLM")
                                     await task_manager.schedule_llm_task(
-                                        run_llm_and_tts(text, websocket, tts_provider, piper_voice_path, task_manager, conversation_history)
+                                        run_llm_and_tts(text, websocket, tts_provider, piper_voice_path, length_scale, task_manager, conversation_history)
                                     )
 
                     except Exception as e:
