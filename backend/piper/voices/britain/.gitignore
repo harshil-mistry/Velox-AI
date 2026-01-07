@@ -1,0 +1,4 @@
+# Voices and config files will be downloaded in runtime
+
+*
+!.gitignore

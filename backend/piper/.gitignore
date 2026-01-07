@@ -1,0 +1,6 @@
+#Piper exe and wheel files will be downloaded in runtime
+
+*
+!.gitignore
+!voices/
+!voices/**

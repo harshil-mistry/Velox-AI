@@ -240,6 +240,87 @@ ESPEAK_DATA = os.path.join(PIPER_DIR, "espeak-ng-data")
 
 PIPER_READY = False # Global Flag
 
+# Voice Catalog (Source: Hugging Face)
+VOICE_CATALOG = {
+    "en_US-amy-medium": {
+        "name": "Amy (US) - Medium",
+        "locale": "usa",
+        "file": "en_US-amy-medium.onnx",
+        "url_model": "https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/en/en_US/amy/medium/en_US-amy-medium.onnx?download=true",
+        "url_config": "https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/en/en_US/amy/medium/en_US-amy-medium.onnx.json?download=true"
+    },
+    "en_US-hfc_female-medium": {
+        "name": "HFC Female (US) - Medium",
+        "locale": "usa",
+        "file": "en_US-hfc_female-medium.onnx",
+        "url_model": "https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/en/en_US/hfc_female/medium/en_US-hfc_female-medium.onnx?download=true",
+        "url_config": "https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/en/en_US/hfc_female/medium/en_US-hfc_female-medium.onnx.json?download=true"
+    },
+    "en_GB-semaine-medium": {
+        "name": "Semaine (UK) - Medium",
+        "locale": "britain", # "britain" specific folder as requested
+        "file": "en_GB-semaine-medium.onnx",
+        "url_model": "https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/en/en_GB/semaine/medium/en_GB-semaine-medium.onnx?download=true",
+        "url_config": "https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/en/en_GB/semaine/medium/en_GB-semaine-medium.onnx.json?download=true"
+    },
+    "en_GB-cori-high": {
+        "name": "Cori (UK) - High",
+        "locale": "britain",
+        "file": "en_GB-cori-high.onnx",
+        "url_model": "https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/en/en_GB/cori/high/en_GB-cori-high.onnx?download=true",
+        "url_config": "https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/en/en_GB/cori/high/en_GB-cori-high.onnx.json?download=true"
+    }
+}
+
+async def download_file(url, dest_path):
+    """Downloads a file from URL to dest_path."""
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url) as resp:
+                if resp.status == 200:
+                    with open(dest_path, 'wb') as f:
+                        f.write(await resp.read())
+                    return True
+                else:
+                    logger.error(f"Failed to download {url}: {resp.status}")
+                    return False
+    except Exception as e:
+        logger.error(f"Download Error for {url}: {e}")
+        return False
+
+async def ensure_voice_model(voice_id):
+    """Ensures the voice model exists locally. Downloads if missing."""
+    if voice_id not in VOICE_CATALOG:
+        return None
+
+    info = VOICE_CATALOG[voice_id]
+    
+    # Construct paths
+    # Ensure subdirectory exists (e.g., piper/voices/usa)
+    locale_dir = os.path.join(PIPER_VOICES_DIR, info["locale"])
+    os.makedirs(locale_dir, exist_ok=True)
+    
+    model_path = os.path.join(locale_dir, info["file"])
+    config_path = model_path + ".json"
+
+    # Check existence
+    if os.path.exists(model_path) and os.path.exists(config_path):
+        return model_path
+
+    logger.info(f"Downloading missing voice: {info['name']}...")
+    
+    # Download Model
+    if not await download_file(info["url_model"], model_path):
+        return None
+    
+    # Download Config
+    if not await download_file(info["url_config"], config_path):
+        return None
+        
+    logger.info(f"Voice {info['name']} ready.")
+    return model_path
+
+
 async def install_piper():
     """Background task to download and set up Piper dependencies."""
     global PIPER_READY
@@ -280,22 +361,17 @@ async def startup_event():
 
 
 def get_piper_voices():
-    """Recursively finds all .onnx voice models in the voices directory."""
+    """Returns the static catalog of voices."""
     voices = []
-    # Recursive glob for .onnx files
-    pattern = os.path.join(PIPER_VOICES_DIR, "**", "*.onnx")
-    for file_path in glob.glob(pattern, recursive=True):
-        # Create readable ID/Name
-        # ID = Relative path from voices dir (e.g., "usa\en_US-amy-medium.onnx")
-        rel_path = os.path.relpath(file_path, PIPER_VOICES_DIR)
-        
-        # Name = Filename without extension (e.g., "en_US-amy-medium")
-        name = os.path.splitext(os.path.basename(file_path))[0]
+    for voice_id, info in VOICE_CATALOG.items():
+        # Ideally we check if installed, but for listing we verify availability in catalog
+        # Construct expected path
+        path = os.path.join(PIPER_VOICES_DIR, info["locale"], info["file"])
         
         voices.append({
-            "id": rel_path,
-            "name": name,
-            "path": file_path
+            "id": voice_id,
+            "name": info["name"],
+            "path": path # This is where it *should* be
         })
     return voices
 
@@ -305,12 +381,15 @@ def list_voices():
 
 # ... (Shared Logic SilenceManager - Unchanged)
 
-async def run_piper_tts(text: str, websocket: WebSocket, model_path: str):
+async def run_piper_tts(text: str, websocket: WebSocket, model_path: str, length_scale: float = 1.0):
     """Streams text to Piper binary and audio to WebSocket."""
     if not text.strip(): return
     
     # Notify Client: AI is Speaking (Text)
-    await websocket.send_json({"type": "transcript", "role": "assistant", "content": text})
+    try:
+        await websocket.send_json({"type": "transcript", "role": "assistant", "content": text})
+    except (WebSocketDisconnect, RuntimeError):
+        return
 
     if not PIPER_READY:
         logger.warning("Piper is not ready yet (Installing/Missing).")
@@ -331,6 +410,7 @@ async def run_piper_tts(text: str, websocket: WebSocket, model_path: str):
         PIPER_BINARY,
         "--model", model_path,
         "--espeak_data", ESPEAK_DATA,
+        "--length_scale", str(length_scale),
         "--output-raw",
     ]
 
@@ -358,8 +438,12 @@ async def run_piper_tts(text: str, websocket: WebSocket, model_path: str):
             chunk = await process.stdout.read(1024)
             if not chunk:
                 break
-            await websocket.send_bytes(chunk)
-            total_bytes += len(chunk)
+            try:
+                await websocket.send_bytes(chunk)
+                total_bytes += len(chunk)
+            except (WebSocketDisconnect, RuntimeError):
+                process.terminate() # Kill process if client gone
+                return
 
         await process.wait()
         
@@ -383,7 +467,7 @@ async def run_piper_tts(text: str, websocket: WebSocket, model_path: str):
         logger.error(f"Piper Exception: {e}")
 
 
-async def run_llm_and_tts(text: str, websocket: WebSocket, tts_provider: str, tts_voice_path: str, task_manager: TaskStateManager, history: list):
+async def run_llm_and_tts(text: str, websocket: WebSocket, tts_provider: str, tts_voice_path: str, length_scale: float, task_manager: TaskStateManager, history: list):
     """Pipeline: Text -> Groq (Stream) -> Sentence Buffer -> TTS (Stream) -> WebSocket"""
     
     # 1. Update History with User Input
@@ -433,7 +517,7 @@ async def run_llm_and_tts(text: str, websocket: WebSocket, tts_provider: str, tt
                     task_manager.is_thinking = False # Thinking phase done
                     
                     if tts_provider == "piper":
-                        await run_piper_tts(text_chunk, websocket, tts_voice_path)
+                        await run_piper_tts(text_chunk, websocket, tts_voice_path, length_scale)
                     else:
                         # Deepgram Logic
                         await websocket.send_json({"type": "transcript", "role": "assistant", "content": text_chunk})
@@ -471,12 +555,21 @@ async def run_llm_and_tts(text: str, websocket: WebSocket, tts_provider: str, tt
             if full_response.strip():
                 history.append({"role": "assistant", "content": full_response})
 
-            await websocket.send_json({"type": "status", "content": "listening"})
+            try:
+                await websocket.send_json({"type": "status", "content": "listening"})
+            except (WebSocketDisconnect, RuntimeError):
+                pass
 
+        except (WebSocketDisconnect, RuntimeError):
+            # Normal client disconnect
+            pass
         except Exception as e:
             if "Cancel" not in str(e): # Ignore cancellation errors
                  logger.error(f"LLM Error: {e}")
-                 await websocket.send_json({"type": "error", "content": str(e)})
+                 try:
+                    await websocket.send_json({"type": "error", "content": str(e)})
+                 except (WebSocketDisconnect, RuntimeError):
+                    pass
 
     finally:
         task_manager.is_thinking = False
@@ -493,7 +586,7 @@ def verify_token(token: str):
 # --- WebSocket Endpoint ---
 
 @app.websocket("/ws/stream")
-async def audio_stream(websocket: WebSocket, token: str = Query(None), tts_provider: str = Query("deepgram"), tts_voice: str = Query(None), stt_provider: str = Query("deepgram"), stt_language: str = Query("english")):
+async def audio_stream(websocket: WebSocket, token: str = Query(None), tts_provider: str = Query("deepgram"), tts_voice: str = Query(None), tts_speed: str = Query("normal"), stt_provider: str = Query("deepgram"), stt_language: str = Query("english")):
     # 1. Verification
     if not verify_token(token):
         logger.warning(f"Unauthorized connection attempt with token: {token}")
@@ -501,11 +594,20 @@ async def audio_stream(websocket: WebSocket, token: str = Query(None), tts_provi
         return
 
     await websocket.accept()
-    logger.info(f"Client connected [TTS: {tts_provider}]")
+    logger.info(f"Client connected [TTS: {tts_provider} | Speed: {tts_speed}]")
 
     # 2. Send Configuration
     sample_rate = TTS_RATE_PIPER if tts_provider == "piper" else TTS_RATE_DEEPGRAM
     await websocket.send_json({"type": "config", "sample_rate": sample_rate})
+    
+    # Resolve TTS Speed to Scale
+    # Piper: Scale < 1.0 is FASTER, Scale > 1.0 is SLOWER
+    length_scale = 1.0
+    if tts_speed == "fast":
+        length_scale = 0.8
+    elif tts_speed == "slow":
+        length_scale = 1.2
+
 
     silence_manager = SilenceManager()
     task_manager = TaskStateManager() # NEW: State Manager
@@ -514,22 +616,40 @@ async def audio_stream(websocket: WebSocket, token: str = Query(None), tts_provi
     # Resolve Voice Path for Piper
     piper_voice_path = None
     if tts_provider == "piper":
-        voices = get_piper_voices()
-        if tts_voice:
-             # Find matching voice by ID
-             found = next((v for v in voices if v["id"] == tts_voice), None)
-             if found:
-                 piper_voice_path = found["path"]
+        if not PIPER_READY:
+             await websocket.send_json({"type": "status", "content": "Installing TTS Engine..."})
+             
+             # Wait for startup task? Or just error. 
+             # For simplicity, we error if critical binaries are missing, but voices we download.
+             # Ideally PIPER_READY covers binaries.
         
-        if not piper_voice_path and voices:
-            # Default to first
-            piper_voice_path = voices[0]["path"]
-            logger.info(f"Defaulting to Piper Voice: {voices[0]['name']}")
-            
+        # Determine voice ID
+        target_voice = tts_voice if tts_voice else "en_US-amy-medium" # Default
+        
+        # Ensure Voice Model (Download if needed)
+        # Notify user if downloading
+        if target_voice in VOICE_CATALOG:
+             path_check = os.path.join(PIPER_VOICES_DIR, VOICE_CATALOG[target_voice]["locale"], VOICE_CATALOG[target_voice]["file"])
+             if not os.path.exists(path_check):
+                 await websocket.send_json({"type": "status", "content": f"Downloading Voice: {VOICE_CATALOG[target_voice]['name']}..."})
+
+        piper_voice_path = await ensure_voice_model(target_voice)
+        
         if not piper_voice_path:
-            logger.error("No Piper voices found!")
-            await websocket.close(code=4002) # Custom code for misconfig
-            return
+            logger.error(f"Failed to prepare Piper voice: {target_voice}")
+            # Fallback to ANY existing voice? Or fail.
+            # Try finding one from get_piper_voices as fallback
+            fallback_list = get_piper_voices()
+            for v in fallback_list:
+                if os.path.exists(v["path"]):
+                    piper_voice_path = v["path"]
+                    break
+        
+        if not piper_voice_path:
+             logger.error("No usable Piper voices found.")
+             await websocket.close(code=4002)
+             return
+
     
     # 3. STT Setup (Gladia or Deepgram)
     
