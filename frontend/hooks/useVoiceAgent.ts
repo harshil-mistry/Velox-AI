@@ -165,9 +165,8 @@ export function useVoiceAgent({
 
         } catch (e) {
             console.error(e);
-            setStatus('error');
         }
-    }, [serverUrl, token, ttsProvider, ttsVoice, sttProvider, sttLanguage, ttsSpeed]); // Re-create if provider changes
+    }, [serverUrl, token, ttsProvider, ttsVoice, sttProvider, sttLanguage, ttsSpeed, llmProvider, llmModel]); // Re-create if provider changes
 
     const disconnect = useCallback(() => {
         wsRef.current?.close();

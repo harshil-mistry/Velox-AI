@@ -13,7 +13,7 @@ from websockets.exceptions import ConnectionClosed
 import base64
 
 from dotenv import load_dotenv
-from groq import Groq
+from llm_service import stream_llm_response
 
 # Setup Logging
 logging.basicConfig(level=logging.INFO)
@@ -23,6 +23,7 @@ logger = logging.getLogger("VeloxBackend")
 load_dotenv()
 DEEPGRAM_API_KEY = os.getenv("DEEPGRAM_API_KEY")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+CEREBRAS_API_KEY = os.getenv("CEREBRAS_API_KEY")
 GLADIA_API_KEY = os.getenv("GLADIA_API_KEY")
 
 app = FastAPI()
@@ -375,27 +376,91 @@ async def run_piper_tts(text: str, websocket: WebSocket, model_path: str, length
         logger.error(f"Piper Exception: {e}")
 
 
+
+async def run_deepgram_tts(text: str, websocket: WebSocket, perf_state: dict = None):
+    """Generates audio via Deepgram Aura and streams to WebSocket."""
+    if not text.strip(): return
+
+    # Notify Frontend (Text)
+    try:
+        await websocket.send_json({"type": "transcript", "role": "assistant", "content": text})
+    except (WebSocketDisconnect, RuntimeError):
+        return
+
+    url = f"https://api.deepgram.com/v1/speak?model=aura-asteria-en&encoding=linear16&sample_rate={TTS_RATE_DEEPGRAM}&container=none"
+    headers = {"Authorization": f"Token {DEEPGRAM_API_KEY}", "Content-Type": "application/json"}
+    payload = {"text": text}
+
+    start_time = time.time()
+    total_bytes = 0
+    
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(url, headers=headers, json=payload) as response:
+                if response.status == 200:
+                    async for chunk in response.content.iter_chunked(8192):
+                        if chunk: 
+                            try:
+                                await websocket.send_bytes(chunk)
+                                total_bytes += len(chunk)
+
+                                # Performance Logging
+                                if perf_state and not perf_state.get("logged", False):
+                                   latency = time.time() - perf_state["start_time"]
+                                   logger.info(f"⚡ Latency (Deepgram): {latency:.3f}s")
+                                   perf_state["logged"] = True
+                            except (WebSocketDisconnect, RuntimeError):
+                                return
+                else:
+                    logger.error(f"TTS Error: {await response.text()}")
+    except Exception as e:
+        logger.error(f"Deepgram TTS Exception: {e}")
+
+    # Simulation Sleep (to block logical flow until audio finishes)
+    if total_bytes > 0:
+        audio_duration = total_bytes / (TTS_RATE_DEEPGRAM * 1 * 2) 
+        elapsed = time.time() - start_time
+        remaining = audio_duration - elapsed
+        if remaining > 0:
+            await asyncio.sleep(remaining)
+
+
 async def run_llm_and_tts(text: str, websocket: WebSocket, tts_provider: str, tts_voice_path: str, length_scale: float, task_manager: TaskStateManager, history: list, turn_start_time: float = None, llm_provider: str = "groq", llm_model: str = "llama-3.1-8b-instant"):
     """Pipeline: Text -> LLM (Stream) -> Sentence Buffer -> TTS (Stream) -> WebSocket"""
     
+    # Pre-checks
+    if not text or not text.strip(): return
+
+    print(f"LLM Provider: {llm_provider}")
+    print(f"LLM Model: {llm_model}")
+
     # 1. Update History with User Input
     history.append({"role": "user", "content": text})
     
     task_manager.is_thinking = True
     task_manager.interrupt_signal.clear()
+    
     try:
         await websocket.send_json({"type": "status", "content": "thinking"})
 
-        # Modular LLM Selection
-        if llm_provider == "groq":
-             client = Groq(api_key=GROQ_API_KEY)
-             model = llm_model
-        else:
-             # Fallback
-             client = Groq(api_key=GROQ_API_KEY)
-             model = "llama-3.1-8b-instant"
+        # Modular LLM Selection (API Based)
+        api_key = ""
+        base_url = ""
 
-        # 2. Prepare Messages (System + Last 25 Context)
+        if llm_provider == "groq":
+             api_key = GROQ_API_KEY
+             base_url = "https://api.groq.com/openai/v1"
+        elif llm_provider == "cerebras":
+             api_key = CEREBRAS_API_KEY
+             base_url = "https://api.cerebras.ai/v1"
+             if not llm_model: llm_model = "llama3.1-8b"
+        else:
+             # Fallback to Groq
+             api_key = GROQ_API_KEY
+             base_url = "https://api.groq.com/openai/v1"
+             if not llm_model: llm_model = "llama-3.1-8b-instant"
+
+        # 2. Prepare Messages
         system_msg = {"role": "system", "content": "You are 'Velox AI', a voice agent currently in the development phase. Your goal is to be helpful, human-like, and conversational.\n\nGuidelines:\n1. Keep responses medium-length. Not too short, not too long.Try to keep the entire response length to 2-3 sentences. Only respond with more than 2-3 sentences if the user's question is complex or requires a detailed explanation.\n2. Use a natural, human tone. Include expressions like 'hmm', 'uh-huh', 'I see' where appropriate to sound alive.\n3. Identify Potential Interruptions: If the user's last message seems incomplete or ends with trailing thoughts (e.g., 'I was thinking about...', 'Maybe if I...'), START your response with a filler like 'Uh-huh?', 'Go on...', or 'Right...' to encourage them or show you are listening, so they don't feel interrupted.\n4. If explicitly interrupted [User interrupted you], handle it naturally without apologizing every time.\n5. Do not be robotic."}
         
         # Contextual Barge-In
@@ -403,117 +468,74 @@ async def run_llm_and_tts(text: str, websocket: WebSocket, tts_provider: str, tt
             text += " [User interrupted you]"
             task_manager.was_interrupted = False
         
-        logger.info(f"LLM Input: {text} [Provider: {llm_provider} | Model: {model}]") # Debug Log
+        logger.info(f"LLM Input: {text} [Provider: {llm_provider} | Model: {llm_model}]") 
 
         # Limit context to last 25 messages
         context_messages = history[-25:]
         messages = [system_msg] + context_messages
 
         try:
-            stream = client.chat.completions.create(
-                messages=messages,
-                model=model,
-                stream=True
-            )
-
+            # Stream Loop (Async)
+            full_response = ""
             sentence_buffer = ""
-            full_response = "" # Track full response for history
-            punctuation = {'.', '?', '!', ':', ';'} 
-            
+            punctuation = {'.', '?', '!', ':', ';', '\n'}
             
             # Performance State for TTS
             perf_state = {"start_time": turn_start_time, "logged": False} if turn_start_time else None
 
-            # Reuse session for efficiency
-            async with aiohttp.ClientSession() as session:
-
-                async def speak(text_chunk):
-                    if not text_chunk.strip(): return
-                    if task_manager.interrupt_signal.is_set(): return # Abort if interrupted
-
-                    task_manager.is_ai_speaking = True
-                    task_manager.is_thinking = False # Thinking phase done
-                    
-                    if tts_provider == "piper":
-                        await run_piper_tts(text_chunk, websocket, tts_voice_path, length_scale, perf_state)
-                    else:
-                        # Deepgram Logic
-                        await websocket.send_json({"type": "transcript", "role": "assistant", "content": text_chunk})
-                        
-                        url = f"https://api.deepgram.com/v1/speak?model=aura-asteria-en&encoding=linear16&sample_rate={TTS_RATE_DEEPGRAM}&container=none"
-                        headers = {"Authorization": f"Token {DEEPGRAM_API_KEY}", "Content-Type": "application/json"}
-                        payload = {"text": text_chunk}
-
-                        start_time = time.time()
-                        total_bytes = 0
-
-                        try:
-                            async with session.post(url, headers=headers, json=payload) as response:
-                                if response.status == 200:
-                                    async for chunk in response.content.iter_chunked(8192):
-                                        if task_manager.interrupt_signal.is_set(): break
-                                        if chunk: 
-                                            await websocket.send_bytes(chunk)
-
-                                            # Performance Logging (First Byte)
-                                            if perf_state and not perf_state.get("logged", False):
-                                                latency = time.time() - perf_state["start_time"]
-                                                logger.info(f"⚡ Latency (Deepgram): {latency:.3f}s")
-                                                print(f"⚡ Latency (Deepgram): {latency:.3f}s")
-                                                perf_state["logged"] = True
-
-                                            total_bytes += len(chunk)
-                                else:
-                                    logger.error(f"TTS Error: {await response.text()}")
-                            
-                            # Sync State with Audio Duration
-                            if total_bytes > 0:
-                                audio_duration = total_bytes / (TTS_RATE_DEEPGRAM * 1 * 2) # Rate * Channels * BytesPerSample
-                                elapsed = time.time() - start_time
-                                remaining = audio_duration - elapsed
-                                if remaining > 0:
-                                    await asyncio.sleep(remaining)
-
-                        except Exception as e:
-                            logger.error(f"TTS Exception: {e}")
-
-                for chunk in stream:
-                    if task_manager.interrupt_signal.is_set(): break
-                    token = chunk.choices[0].delta.content
-                    if token:
-                        sentence_buffer += token
-                        full_response += token
-                        if any(p in token for p in punctuation):
-                            await speak(sentence_buffer)
-                            sentence_buffer = ""
+            # Stream via Generic Service
+            async for token in stream_llm_response(messages, api_key, base_url, llm_model):
+                if task_manager.interrupt_signal.is_set():
+                    logger.info("LLM Generation Interrupted.")
+                    break
                 
-                if sentence_buffer and not task_manager.interrupt_signal.is_set():
-                    await speak(sentence_buffer)
+                if token:
+                    full_response += token
+                    sentence_buffer += token
+                    
+                    if any(p in token for p in punctuation):
+                         # Basic sentence splitting
+                         import re
+                         sentences = re.split(r'(?<=[.!?])\s+|(?<=\n)', sentence_buffer)
+                         
+                         if len(sentences) > 1:
+                             for s in sentences[:-1]:
+                                 s = s.strip()
+                                 if s:
+                                     coro = run_piper_tts(s, websocket, tts_voice_path, length_scale, perf_state) if tts_provider == "piper" else \
+                                            run_deepgram_tts(s, websocket, perf_state)
+                                     await task_manager.schedule_llm_task(coro)
+                             sentence_buffer = sentences[-1]
+
+            # Flush remaining buffer
+            if sentence_buffer.strip() and not task_manager.interrupt_signal.is_set():
+                 coro = run_piper_tts(sentence_buffer.strip(), websocket, tts_voice_path, length_scale, perf_state) if tts_provider == "piper" else \
+                        run_deepgram_tts(sentence_buffer.strip(), websocket, perf_state)
+                 await task_manager.schedule_llm_task(coro)
+
+            logger.info(f"AI Response Complete: {full_response[:50]}...")
             
-            # 3. Update History with Assistant Response
+            # Update History
             if full_response.strip():
                 history.append({"role": "assistant", "content": full_response})
 
-            try:
-                await websocket.send_json({"type": "status", "content": "listening"})
-            except (WebSocketDisconnect, RuntimeError):
-                pass
+            if not task_manager.interrupt_signal.is_set():
+                try:
+                    await websocket.send_json({"type": "status", "content": "listening"})
+                except (WebSocketDisconnect, RuntimeError): pass
 
-        except (WebSocketDisconnect, RuntimeError):
-            # Normal client disconnect
-            pass
         except Exception as e:
-            if "Cancel" not in str(e): # Ignore cancellation errors
-                 logger.error(f"LLM Error: {e}")
-                 try:
-                    await websocket.send_json({"type": "error", "content": str(e)})
-                 except (WebSocketDisconnect, RuntimeError):
-                    pass
+            logger.error(f"LLM Stream Error: {e}")
+            try:
+                await websocket.send_json({"type": "error", "content": str(e)})
+            except: pass
+            
+    except Exception as e:
+         logger.error(f"LLM Logic Error: {e}")
 
     finally:
         task_manager.is_thinking = False
         task_manager.is_ai_speaking = False
-        await asyncio.sleep(0.1)
 
 
 # --- Security --- (Unchanged)

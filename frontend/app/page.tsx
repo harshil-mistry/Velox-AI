@@ -248,7 +248,10 @@ export default function Home() {
                     >
                       <option value="llama-3.1-8b-instant">Llama 3.1 8B</option>
                       <option value="llama-3.1-70b-versatile">Llama 3.1 70B</option>
-                      <option value="mixtral-8x7b-32768">Mixtral 8x7B</option>
+                      <option value="openai/gpt-oss-120b">GPT-OSS 120B</option>
+                      <option value="openai/gpt-oss-20b">GPT-OSS 20B</option>
+                      <option value="openai/gpt-oss-safeguard-20b">GPT-OSS Safeguard 20B</option>
+                      <option value="qwen/qwen3-32b">Qwen 3 32B</option>
                     </select>
                     <div className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none text-zinc-600">▼</div>
                   </div>

@@ -4,3 +4,4 @@ python-dotenv==1.0.1
 websockets==15.0.1
 aiohttp==3.11.13
 groq==1.0.0
+cerebras_cloud_sdk==1.0.0
