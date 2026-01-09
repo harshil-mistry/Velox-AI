@@ -11,6 +11,8 @@ interface UseVoiceAgentProps {
     sttProvider?: 'deepgram' | 'gladia';
     sttLanguage?: string;
     ttsSpeed?: string;
+    llmProvider?: string;
+    llmModel?: string;
 }
 
 export function useVoiceAgent({
@@ -23,7 +25,9 @@ export function useVoiceAgent({
     ttsVoice,
     sttProvider = 'deepgram',
     sttLanguage = 'en',
-    ttsSpeed = 'normal'
+    ttsSpeed = 'normal',
+    llmProvider = 'groq',
+    llmModel = 'llama-3.1-8b-instant'
 }: UseVoiceAgentProps) {
     const [status, setStatus] = useState<'idle' | 'connecting' | 'connected' | 'error'>('idle');
     const [isSpeaking, setIsSpeaking] = useState(false);
@@ -52,12 +56,12 @@ export function useVoiceAgent({
 
         try {
             // 1. WebSocket
-            const ws = new WebSocket(`${serverUrl}?token=${token}&tts_provider=${ttsProvider}&tts_voice=${ttsVoice || ''}&stt_provider=${sttProvider}&stt_language=${sttLanguage}&tts_speed=${ttsSpeed}`);
+            const ws = new WebSocket(`${serverUrl}?token=${token}&tts_provider=${ttsProvider}&tts_voice=${ttsVoice || ''}&stt_provider=${sttProvider}&stt_language=${sttLanguage}&tts_speed=${ttsSpeed}&llm_provider=${llmProvider}&llm_model=${llmModel}`);
             ws.binaryType = 'arraybuffer';
 
             ws.onopen = () => {
                 setStatus('connected');
-                console.log(`WS Connected [TTS: ${ttsProvider}]`);
+                console.log(`WS Connected [TTS: ${ttsProvider} | LLM: ${llmProvider} (${llmModel})]`);
             };
 
             ws.onmessage = async (event) => {

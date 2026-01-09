@@ -375,8 +375,8 @@ async def run_piper_tts(text: str, websocket: WebSocket, model_path: str, length
         logger.error(f"Piper Exception: {e}")
 
 
-async def run_llm_and_tts(text: str, websocket: WebSocket, tts_provider: str, tts_voice_path: str, length_scale: float, task_manager: TaskStateManager, history: list, turn_start_time: float = None):
-    """Pipeline: Text -> Groq (Stream) -> Sentence Buffer -> TTS (Stream) -> WebSocket"""
+async def run_llm_and_tts(text: str, websocket: WebSocket, tts_provider: str, tts_voice_path: str, length_scale: float, task_manager: TaskStateManager, history: list, turn_start_time: float = None, llm_provider: str = "groq", llm_model: str = "llama-3.1-8b-instant"):
+    """Pipeline: Text -> LLM (Stream) -> Sentence Buffer -> TTS (Stream) -> WebSocket"""
     
     # 1. Update History with User Input
     history.append({"role": "user", "content": text})
@@ -386,9 +386,15 @@ async def run_llm_and_tts(text: str, websocket: WebSocket, tts_provider: str, tt
     try:
         await websocket.send_json({"type": "status", "content": "thinking"})
 
-        groq = Groq(api_key=GROQ_API_KEY)
+        # Modular LLM Selection
+        if llm_provider == "groq":
+             client = Groq(api_key=GROQ_API_KEY)
+             model = llm_model
+        else:
+             # Fallback
+             client = Groq(api_key=GROQ_API_KEY)
+             model = "llama-3.1-8b-instant"
 
-        # 2. Prepare Messages (System + Last 25 Context)
         # 2. Prepare Messages (System + Last 25 Context)
         system_msg = {"role": "system", "content": "You are 'Velox AI', a voice agent currently in the development phase. Your goal is to be helpful, human-like, and conversational.\n\nGuidelines:\n1. Keep responses medium-length. Not too short, not too long.Try to keep the entire response length to 2-3 sentences. Only respond with more than 2-3 sentences if the user's question is complex or requires a detailed explanation.\n2. Use a natural, human tone. Include expressions like 'hmm', 'uh-huh', 'I see' where appropriate to sound alive.\n3. Identify Potential Interruptions: If the user's last message seems incomplete or ends with trailing thoughts (e.g., 'I was thinking about...', 'Maybe if I...'), START your response with a filler like 'Uh-huh?', 'Go on...', or 'Right...' to encourage them or show you are listening, so they don't feel interrupted.\n4. If explicitly interrupted [User interrupted you], handle it naturally without apologizing every time.\n5. Do not be robotic."}
         
@@ -397,16 +403,16 @@ async def run_llm_and_tts(text: str, websocket: WebSocket, tts_provider: str, tt
             text += " [User interrupted you]"
             task_manager.was_interrupted = False
         
-        logger.info(f"LLM Input: {text}") # Debug Log
+        logger.info(f"LLM Input: {text} [Provider: {llm_provider} | Model: {model}]") # Debug Log
 
         # Limit context to last 25 messages
         context_messages = history[-25:]
         messages = [system_msg] + context_messages
 
         try:
-            stream = groq.chat.completions.create(
+            stream = client.chat.completions.create(
                 messages=messages,
-                model="llama-3.1-8b-instant",
+                model=model,
                 stream=True
             )
 
@@ -519,7 +525,7 @@ def verify_token(token: str):
 # --- WebSocket Endpoint ---
 
 @app.websocket("/ws/stream")
-async def audio_stream(websocket: WebSocket, token: str = Query(None), tts_provider: str = Query("deepgram"), tts_voice: str = Query(None), tts_speed: str = Query("normal"), stt_provider: str = Query("deepgram"), stt_language: str = Query("english")):
+async def audio_stream(websocket: WebSocket, token: str = Query(None), tts_provider: str = Query("deepgram"), tts_voice: str = Query(None), tts_speed: str = Query("normal"), stt_provider: str = Query("deepgram"), stt_language: str = Query("english"), llm_provider: str = Query("groq"), llm_model: str = Query("llama-3.1-8b-instant")):
     # 1. Verification
     if not verify_token(token):
         logger.warning(f"Unauthorized connection attempt with token: {token}")
@@ -527,7 +533,7 @@ async def audio_stream(websocket: WebSocket, token: str = Query(None), tts_provi
         return
 
     await websocket.accept()
-    logger.info(f"Client connected [TTS: {tts_provider} | Speed: {tts_speed}]")
+    logger.info(f"Client connected [TTS: {tts_provider} | Speed: {tts_speed} | LLM: {llm_provider} ({llm_model})]")
 
     # 2. Send Configuration
     sample_rate = TTS_RATE_PIPER if tts_provider == "piper" else TTS_RATE_DEEPGRAM
@@ -644,7 +650,7 @@ async def audio_stream(websocket: WebSocket, token: str = Query(None), tts_provi
                                         # Trigger LLM Immediately on Final (Endpointing)
                                         turn_start = time.time()
                                         await task_manager.schedule_llm_task(
-                                            run_llm_and_tts(text, websocket, tts_provider, piper_voice_path, length_scale, task_manager, conversation_history, turn_start)
+                                            run_llm_and_tts(text, websocket, tts_provider, piper_voice_path, length_scale, task_manager, conversation_history, turn_start, llm_provider, llm_model)
                                         )
                                     else:
                                         print(f"User (Gladia Partial): {text}") # Print partials
@@ -746,7 +752,7 @@ async def audio_stream(websocket: WebSocket, token: str = Query(None), tts_provi
                                             print("Deepgram Final -> Triggering LLM")
                                             turn_start = time.time()
                                             await task_manager.schedule_llm_task(
-                                                run_llm_and_tts(full_text, websocket, tts_provider, piper_voice_path, length_scale, task_manager, conversation_history, turn_start)
+                                                run_llm_and_tts(full_text, websocket, tts_provider, piper_voice_path, length_scale, task_manager, conversation_history, turn_start, llm_provider, llm_model)
                                             )
                                     else:
                                         print(f"User (Deepgram Partial): {sentence}")
@@ -762,7 +768,7 @@ async def audio_stream(websocket: WebSocket, token: str = Query(None), tts_provi
                                     logger.info("Deepgram UtteranceEnd -> Triggering LLM")
                                     turn_start = time.time()
                                     await task_manager.schedule_llm_task(
-                                        run_llm_and_tts(text, websocket, tts_provider, piper_voice_path, length_scale, task_manager, conversation_history, turn_start)
+                                        run_llm_and_tts(text, websocket, tts_provider, piper_voice_path, length_scale, task_manager, conversation_history, turn_start, llm_provider, llm_model)
                                     )
 
                     except Exception as e:

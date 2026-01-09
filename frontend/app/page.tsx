@@ -8,6 +8,10 @@ export default function Home() {
   const [sttProvider, setSttProvider] = useState<'deepgram' | 'gladia'>('deepgram');
   const [sttLanguage, setSttLanguage] = useState<string>('english');
 
+  // LLM Config
+  const [llmProvider, setLlmProvider] = useState<'groq'>('groq');
+  const [llmModel, setLlmModel] = useState<string>('llama-3.1-8b-instant');
+
   // Piper Config
   const [voices, setVoices] = useState<{ id: string, name: string }[]>([]);
   const [ttsVoice, setTtsVoice] = useState<string>('');
@@ -41,7 +45,9 @@ export default function Home() {
     ttsVoice,
     sttProvider,
     sttLanguage,
-    ttsSpeed
+    ttsSpeed,
+    llmProvider,
+    llmModel
   });
 
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -217,6 +223,37 @@ export default function Home() {
                   </div>
                 </>
               )}
+
+              {/* LLM Selection */}
+              <div className="space-y-1.5 col-span-2 border-t border-zinc-800 pt-3 mt-1">
+                <label className="text-[10px] font-semibold text-zinc-500 uppercase tracking-wide">Brain (LLM)</label>
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="relative">
+                    <select
+                      disabled={status === 'connected'}
+                      value={llmProvider}
+                      onChange={(e) => setLlmProvider(e.target.value as any)}
+                      className="w-full bg-black/40 border border-zinc-800 rounded-lg pl-3 pr-8 py-2.5 text-xs text-zinc-200 focus:border-orange-500/50 focus:ring-1 focus:ring-orange-500/20 outline-none appearance-none transition-all disabled:opacity-50"
+                    >
+                      <option value="groq">Groq</option>
+                    </select>
+                    <div className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none text-zinc-600">▼</div>
+                  </div>
+                  <div className="relative">
+                    <select
+                      disabled={status === 'connected'}
+                      value={llmModel}
+                      onChange={(e) => setLlmModel(e.target.value)}
+                      className="w-full bg-black/40 border border-zinc-800 rounded-lg pl-3 pr-8 py-2.5 text-xs text-zinc-200 focus:border-orange-500/50 focus:ring-1 focus:ring-orange-500/20 outline-none appearance-none transition-all disabled:opacity-50"
+                    >
+                      <option value="llama-3.1-8b-instant">Llama 3.1 8B</option>
+                      <option value="llama-3.1-70b-versatile">Llama 3.1 70B</option>
+                      <option value="mixtral-8x7b-32768">Mixtral 8x7B</option>
+                    </select>
+                    <div className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none text-zinc-600">▼</div>
+                  </div>
+                </div>
+              </div>
             </div>
           </div>
         )}
@@ -273,6 +310,6 @@ export default function Home() {
         </div>
       </div>
 
-    </main>
+    </main >
   );
 }
