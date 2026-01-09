@@ -590,7 +590,7 @@ async def audio_stream(websocket: WebSocket, token: str = Query(None), tts_provi
                         "language_behaviour": "manual",
                         "language": stt_language,
                         "frames_format": "base64",
-                        "endpointing": 250, # Native Endpointing (ms)
+                        "endpointing": 100, # Native Endpointing (ms)
                     }
                     await gladia_ws.send(json.dumps(config))
                     logger.info("Connected to Gladia Utils")
@@ -673,7 +673,7 @@ async def audio_stream(websocket: WebSocket, token: str = Query(None), tts_provi
     deepgram_url = (
         f"wss://api.deepgram.com/v1/listen?"
         f"model=nova-2&language=en-US&smart_format=true&encoding=linear16&sample_rate=16000&channels=1"
-        f"&interim_results=true&utterance_end_ms=1000&vad_events=true"
+        f"&interim_results=true&utterance_end_ms=1000&vad_events=true&endpointing=100"
     )
     headers = {"Authorization": f"Token {DEEPGRAM_API_KEY}"}
 
@@ -716,6 +716,16 @@ async def audio_stream(websocket: WebSocket, token: str = Query(None), tts_provi
                                         logger.info(f"User (Deepgram Final): {sentence}")
                                         silence_manager.add_text(sentence)
                                         await websocket.send_json({"type": "transcript", "role": "user", "content": sentence})
+                                        
+                                        # Trigger LLM Immediately on Final (Endpointing Fallback)
+                                        # Since we use endpointing=100, is_final means 100ms silence.
+                                        # We treat this as a turn completion.
+                                        full_text = silence_manager.flush()
+                                        if full_text:
+                                            print("Deepgram Final -> Triggering LLM")
+                                            await task_manager.schedule_llm_task(
+                                                run_llm_and_tts(full_text, websocket, tts_provider, piper_voice_path, length_scale, task_manager, conversation_history)
+                                            )
                                     else:
                                         print(f"User (Deepgram Partial): {sentence}")
 
