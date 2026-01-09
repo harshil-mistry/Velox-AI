@@ -9,6 +9,7 @@ import threading
 import time
 import aiohttp
 import websockets
+from websockets.exceptions import ConnectionClosed
 import base64
 
 from dotenv import load_dotenv
@@ -577,72 +578,94 @@ async def audio_stream(websocket: WebSocket, token: str = Query(None), tts_provi
 
         gladia_url = "wss://api.gladia.io/audio/text/audio-transcription"
         
-        try:
-             async with websockets.connect(gladia_url) as gladia_ws:
-                # Send Config
-                config = {
-                    "x_gladia_key": GLADIA_API_KEY,
-                    "sample_rate": 16000,
-                    "encoding": "wav",
-                    "language_behaviour": "manual",
-                    "language": stt_language,
-                    "frames_format": "base64",
-                    "endpointing": 800, # Native Endpointing (ms)
-                }
-                await gladia_ws.send(json.dumps(config))
-                logger.info("Connected to Gladia Utils")
+        # Retry Logic for Gladia
+        for attempt in range(1, 4):
+            try:
+                async with websockets.connect(gladia_url) as gladia_ws:
+                    # Send Config
+                    config = {
+                        "x_gladia_key": GLADIA_API_KEY,
+                        "sample_rate": 16000,
+                        "encoding": "wav",
+                        "language_behaviour": "manual",
+                        "language": stt_language,
+                        "frames_format": "base64",
+                        "endpointing": 250, # Native Endpointing (ms)
+                    }
+                    await gladia_ws.send(json.dumps(config))
+                    logger.info("Connected to Gladia Utils")
 
-                # Receive Task for Gladia
-                async def receive_gladia():
+                    # Keep Alive Task (Gladia needs activity)
+                    async def keep_alive():
+                        while True:
+                            await asyncio.sleep(5)
+                            try:
+                                await gladia_ws.send(json.dumps({"type": "keep_alive"})) 
+                            except Exception:
+                                break
+                    
+                    keep_alive_task = asyncio.create_task(keep_alive())
+
+                    # Receive Task for Gladia
+                    async def receive_gladia():
+                        try:
+                            async for message in gladia_ws:
+                                data = json.loads(message)
+                                if "transcription" in data and data["transcription"]:
+                                    text = data["transcription"]
+                                    is_final = data.get("type") == "final"
+                                    
+                                    silence_manager.update_activity()
+                                    if is_final:
+                                        logger.info(f"User (Gladia Final): {text}")
+                                        silence_manager.add_text(text)
+                                        await websocket.send_json({"type": "transcript", "role": "user", "content": text})
+                                        
+                                        # Trigger LLM Immediately on Final (Endpointing)
+                                        await task_manager.schedule_llm_task(
+                                            run_llm_and_tts(text, websocket, tts_provider, piper_voice_path, length_scale, task_manager, conversation_history)
+                                        )
+                                    else:
+                                        print(f"User (Gladia Partial): {text}") # Print partials
+                                        
+                                        # Transcript-based Interruption (Partial or Final)
+                                        if text and (task_manager.is_ai_speaking or task_manager.is_thinking):
+                                            await task_manager.handle_interruption(websocket)
+                        except ConnectionClosed:
+                            logger.warning("Gladia Connection Closed (Normal)")
+                        except Exception as e:
+                            logger.error(f"Gladia Receive Error: {e}")
+
+                    gladia_receiver = asyncio.create_task(receive_gladia())
+                    
                     try:
-                        async for message in gladia_ws:
-                            data = json.loads(message)
-                            if "transcription" in data and data["transcription"]:
-                                text = data["transcription"]
-                                is_final = data.get("type") == "final"
-                                
-                                silence_manager.update_activity()
-                                if is_final:
-                                    logger.info(f"User (Gladia Final): {text}")
-                                    silence_manager.add_text(text)
-                                    await websocket.send_json({"type": "transcript", "role": "user", "content": text})
-                                    
-                                    # Trigger LLM Immediately on Final (Endpointing)
-                                    await task_manager.schedule_llm_task(
-                                        run_llm_and_tts(text, websocket, tts_provider, piper_voice_path, length_scale, task_manager, conversation_history)
-                                    )
-                                else:
-                                    print(f"User (Gladia Partial): {text}") # Print partials
-                                    
-                                    # Transcript-based Interruption (Partial or Final)
-                                    if text and (task_manager.is_ai_speaking or task_manager.is_thinking):
-                                        await task_manager.handle_interruption(websocket)
-                    except Exception as e:
-                        logger.error(f"Gladia Receive Error: {e}")
+                        while True:
+                            # Receive Audio from Client
+                            data = await websocket.receive_bytes()
+                            
+                            # Send to Gladia
+                            base64_data = base64.b64encode(data).decode("utf-8")
+                            await gladia_ws.send(json.dumps({"frames": base64_data}))
+                    
+                    except WebSocketDisconnect:
+                        logger.info("Client disconnected")
+                    finally:
+                        gladia_receiver.cancel()
+                        keep_alive_task.cancel()
+                        await gladia_ws.close() # Explicit close for Max Sessions Fix
+                    
+                    # If we exit loop normally (client disconnect), break retry
+                    break
 
-                gladia_receiver = asyncio.create_task(receive_gladia())
-                
-                # silence_checker removed (Native Endpointing)
-                
-                try:
-                    while True:
-                        # Receive Audio from Client
-                        data = await websocket.receive_bytes()
-                        
-                        # Send to Gladia
-                        base64_data = base64.b64encode(data).decode("utf-8")
-                        await gladia_ws.send(json.dumps({"frames": base64_data}))
-                
-                except WebSocketDisconnect:
-                    logger.info("Client disconnected")
-                finally:
-                    gladia_receiver.cancel()
-                    # checker_task.cancel() # Removed
-
-        except Exception as e:
-             logger.error(f"Gladia Connection Error: {e}")
-             await websocket.close()
-             return
+            except Exception as e:
+                logger.warning(f"Gladia Connection Attempt {attempt} failed: {e}")
+                if attempt < 3:
+                     # Wait for previous session to clear (Max sessions 4129)
+                    await asyncio.sleep(2)
+                else:
+                    logger.error("Gladia Connection Failed after 3 attempts")
+                    await websocket.close()
+                    return
 
         return
 
