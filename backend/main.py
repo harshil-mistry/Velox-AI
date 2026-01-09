@@ -516,6 +516,9 @@ async def run_llm_and_tts(text: str, websocket: WebSocket, tts_provider: str, tt
                         headers = {"Authorization": f"Token {DEEPGRAM_API_KEY}", "Content-Type": "application/json"}
                         payload = {"text": text_chunk}
 
+                        start_time = time.time()
+                        total_bytes = 0
+
                         try:
                             async with session.post(url, headers=headers, json=payload) as response:
                                 if response.status == 200:
@@ -523,8 +526,18 @@ async def run_llm_and_tts(text: str, websocket: WebSocket, tts_provider: str, tt
                                         if task_manager.interrupt_signal.is_set(): break
                                         if chunk: 
                                             await websocket.send_bytes(chunk)
+                                            total_bytes += len(chunk)
                                 else:
                                     logger.error(f"TTS Error: {await response.text()}")
+                            
+                            # Sync State with Audio Duration
+                            if total_bytes > 0:
+                                audio_duration = total_bytes / (TTS_RATE_DEEPGRAM * 1 * 2) # Rate * Channels * BytesPerSample
+                                elapsed = time.time() - start_time
+                                remaining = audio_duration - elapsed
+                                if remaining > 0:
+                                    await asyncio.sleep(remaining)
+
                         except Exception as e:
                             logger.error(f"TTS Exception: {e}")
 
