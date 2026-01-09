@@ -330,9 +330,16 @@ async def run_piper_tts(text: str, websocket: WebSocket, model_path: str, length
 
         # Write text to stdin
         if process.stdin:
-            process.stdin.write(text.encode('utf-8'))
-            await process.stdin.drain()
-            process.stdin.close()
+            try:
+                process.stdin.write(text.encode('utf-8'))
+                await process.stdin.drain()
+            except (ValueError, BrokenPipeError, ConnectionResetError):
+                logger.warning("Piper Stdin Write Failed (Process Closed?)")
+            
+            try:
+                process.stdin.close()
+            except (ValueError, BrokenPipeError, ConnectionResetError):
+                pass
 
         # Read stdout stream
         while True:

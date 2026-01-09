@@ -3,14 +3,41 @@
 import { useVoiceAgent } from '@/hooks/useVoiceAgent';
 import { useState, useEffect, useRef } from 'react';
 
+// LLM Models Configuration
+const MODELS = {
+  groq: [
+    { id: 'llama-3.1-8b-instant', name: 'Llama 3.1 8B (Fast)' },
+    { id: 'llama-3.1-70b-versatile', name: 'Llama 3.1 70B (Smart)' },
+    { id: 'gemma2-9b-it', name: 'Gemma 2 9B' },
+    { id: 'openai/gpt-oss-120b', name: 'GPT-OSS 120B' },
+    { id: 'openai/gpt-oss-20b', name: 'GPT-OSS 20B' },
+    { id: 'openai/gpt-oss-safeguard-20b', name: 'GPT-OSS Safeguard 20B' },
+    { id: 'qwen/qwen3-32b', name: 'Qwen 3 32B' },
+  ],
+  cerebras: [
+    { id: 'llama3.1-8b', name: 'Llama 3.1 8B' },
+    { id: 'llama3.1-70b', name: 'Llama 3.1 70B' },
+    { id: 'gpt-oss-120b', name: 'GPT-OSS 120B' },
+    { id: 'qwen-3-32b', name: 'Qwen 3 32B' },
+  ]
+};
+
 export default function Home() {
   const [ttsProvider, setTtsProvider] = useState<'deepgram' | 'piper'>('deepgram');
   const [sttProvider, setSttProvider] = useState<'deepgram' | 'gladia'>('deepgram');
   const [sttLanguage, setSttLanguage] = useState<string>('english');
 
   // LLM Config
-  const [llmProvider, setLlmProvider] = useState<'groq'>('groq');
-  const [llmModel, setLlmModel] = useState<string>('llama-3.1-8b-instant');
+  const [llmProvider, setLlmProvider] = useState<'groq' | 'cerebras'>('groq');
+  const [llmModel, setLlmModel] = useState<string>(MODELS.groq[0].id);
+
+  // Update model when provider changes
+  useEffect(() => {
+    const availableModels = MODELS[llmProvider as keyof typeof MODELS];
+    if (availableModels && availableModels.length > 0) {
+      setLlmModel(availableModels[0].id);
+    }
+  }, [llmProvider]);
 
   // Piper Config
   const [voices, setVoices] = useState<{ id: string, name: string }[]>([]);
@@ -236,6 +263,7 @@ export default function Home() {
                       className="w-full bg-black/40 border border-zinc-800 rounded-lg pl-3 pr-8 py-2.5 text-xs text-zinc-200 focus:border-orange-500/50 focus:ring-1 focus:ring-orange-500/20 outline-none appearance-none transition-all disabled:opacity-50"
                     >
                       <option value="groq">Groq</option>
+                      <option value="cerebras">Cerebras</option>
                     </select>
                     <div className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none text-zinc-600">▼</div>
                   </div>
@@ -246,12 +274,9 @@ export default function Home() {
                       onChange={(e) => setLlmModel(e.target.value)}
                       className="w-full bg-black/40 border border-zinc-800 rounded-lg pl-3 pr-8 py-2.5 text-xs text-zinc-200 focus:border-orange-500/50 focus:ring-1 focus:ring-orange-500/20 outline-none appearance-none transition-all disabled:opacity-50"
                     >
-                      <option value="llama-3.1-8b-instant">Llama 3.1 8B</option>
-                      <option value="llama-3.1-70b-versatile">Llama 3.1 70B</option>
-                      <option value="openai/gpt-oss-120b">GPT-OSS 120B</option>
-                      <option value="openai/gpt-oss-20b">GPT-OSS 20B</option>
-                      <option value="openai/gpt-oss-safeguard-20b">GPT-OSS Safeguard 20B</option>
-                      <option value="qwen/qwen3-32b">Qwen 3 32B</option>
+                      {MODELS[llmProvider as keyof typeof MODELS].map(model => (
+                        <option key={model.id} value={model.id}>{model.name}</option>
+                      ))}
                     </select>
                     <div className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none text-zinc-600">▼</div>
                   </div>
