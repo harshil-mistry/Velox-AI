@@ -390,7 +390,7 @@ async def run_llm_and_tts(text: str, websocket: WebSocket, tts_provider: str, tt
 
         # 2. Prepare Messages (System + Last 25 Context)
         # 2. Prepare Messages (System + Last 25 Context)
-        system_msg = {"role": "system", "content": "You are a helpful voice assistant. Keep answers concise (1-2 sentences) for voice output. If the user interrupts you (marked as '[User interrupted you]'), handle it naturally and stop your previous train of thought. Do not apologize for being interrupted in every turn, just move on."}
+        system_msg = {"role": "system", "content": "You are 'Velox AI', a voice agent currently in the development phase. Your goal is to be helpful, human-like, and conversational.\n\nGuidelines:\n1. Keep responses medium-length. Not too short, not too long.Try to keep the entire response length to 2-3 sentences. Only respond with more than 2-3 sentences if the user's question is complex or requires a detailed explanation.\n2. Use a natural, human tone. Include expressions like 'hmm', 'uh-huh', 'I see' where appropriate to sound alive.\n3. Identify Potential Interruptions: If the user's last message seems incomplete or ends with trailing thoughts (e.g., 'I was thinking about...', 'Maybe if I...'), START your response with a filler like 'Uh-huh?', 'Go on...', or 'Right...' to encourage them or show you are listening, so they don't feel interrupted.\n4. If explicitly interrupted [User interrupted you], handle it naturally without apologizing every time.\n5. Do not be robotic."}
         
         # Contextual Barge-In
         if task_manager.was_interrupted:
@@ -445,7 +445,6 @@ async def run_llm_and_tts(text: str, websocket: WebSocket, tts_provider: str, tt
                             async with session.post(url, headers=headers, json=payload) as response:
                                 if response.status == 200:
                                     async for chunk in response.content.iter_chunked(8192):
-                                        if task_manager.interrupt_signal.is_set(): break
                                         if task_manager.interrupt_signal.is_set(): break
                                         if chunk: 
                                             await websocket.send_bytes(chunk)
