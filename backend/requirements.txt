@@ -4,5 +4,3 @@ python-dotenv==1.0.1
 websockets==15.0.1
 aiohttp==3.11.13
 groq==1.0.0
-numpy==2.2.6
-onnxruntime==1.23.2
