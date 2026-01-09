@@ -281,7 +281,7 @@ def list_voices():
 
 # ... (Shared Logic SilenceManager - Unchanged)
 
-async def run_piper_tts(text: str, websocket: WebSocket, model_path: str, length_scale: float = 1.0):
+async def run_piper_tts(text: str, websocket: WebSocket, model_path: str, length_scale: float = 1.0, perf_state: dict = None):
     """Streams text to Piper binary and audio to WebSocket."""
     if not text.strip(): return
     
@@ -340,6 +340,14 @@ async def run_piper_tts(text: str, websocket: WebSocket, model_path: str, length
                 break
             try:
                 await websocket.send_bytes(chunk)
+                
+                # Performance Logging (First Byte)
+                if perf_state and not perf_state.get("logged", False):
+                    latency = time.time() - perf_state["start_time"]
+                    logger.info(f"⚡ Latency (Piper): {latency:.3f}s")
+                    print(f"⚡ Latency (Piper): {latency:.3f}s")
+                    perf_state["logged"] = True
+
                 total_bytes += len(chunk)
             except (WebSocketDisconnect, RuntimeError):
                 process.terminate() # Kill process if client gone
@@ -367,7 +375,7 @@ async def run_piper_tts(text: str, websocket: WebSocket, model_path: str, length
         logger.error(f"Piper Exception: {e}")
 
 
-async def run_llm_and_tts(text: str, websocket: WebSocket, tts_provider: str, tts_voice_path: str, length_scale: float, task_manager: TaskStateManager, history: list):
+async def run_llm_and_tts(text: str, websocket: WebSocket, tts_provider: str, tts_voice_path: str, length_scale: float, task_manager: TaskStateManager, history: list, turn_start_time: float = None):
     """Pipeline: Text -> Groq (Stream) -> Sentence Buffer -> TTS (Stream) -> WebSocket"""
     
     # 1. Update History with User Input
@@ -406,6 +414,10 @@ async def run_llm_and_tts(text: str, websocket: WebSocket, tts_provider: str, tt
             full_response = "" # Track full response for history
             punctuation = {'.', '?', '!', ':', ';'} 
             
+            
+            # Performance State for TTS
+            perf_state = {"start_time": turn_start_time, "logged": False} if turn_start_time else None
+
             # Reuse session for efficiency
             async with aiohttp.ClientSession() as session:
 
@@ -417,7 +429,7 @@ async def run_llm_and_tts(text: str, websocket: WebSocket, tts_provider: str, tt
                     task_manager.is_thinking = False # Thinking phase done
                     
                     if tts_provider == "piper":
-                        await run_piper_tts(text_chunk, websocket, tts_voice_path, length_scale)
+                        await run_piper_tts(text_chunk, websocket, tts_voice_path, length_scale, perf_state)
                     else:
                         # Deepgram Logic
                         await websocket.send_json({"type": "transcript", "role": "assistant", "content": text_chunk})
@@ -434,8 +446,17 @@ async def run_llm_and_tts(text: str, websocket: WebSocket, tts_provider: str, tt
                                 if response.status == 200:
                                     async for chunk in response.content.iter_chunked(8192):
                                         if task_manager.interrupt_signal.is_set(): break
+                                        if task_manager.interrupt_signal.is_set(): break
                                         if chunk: 
                                             await websocket.send_bytes(chunk)
+
+                                            # Performance Logging (First Byte)
+                                            if perf_state and not perf_state.get("logged", False):
+                                                latency = time.time() - perf_state["start_time"]
+                                                logger.info(f"⚡ Latency (Deepgram): {latency:.3f}s")
+                                                print(f"⚡ Latency (Deepgram): {latency:.3f}s")
+                                                perf_state["logged"] = True
+
                                             total_bytes += len(chunk)
                                 else:
                                     logger.error(f"TTS Error: {await response.text()}")
@@ -622,8 +643,9 @@ async def audio_stream(websocket: WebSocket, token: str = Query(None), tts_provi
                                         await websocket.send_json({"type": "transcript", "role": "user", "content": text})
                                         
                                         # Trigger LLM Immediately on Final (Endpointing)
+                                        turn_start = time.time()
                                         await task_manager.schedule_llm_task(
-                                            run_llm_and_tts(text, websocket, tts_provider, piper_voice_path, length_scale, task_manager, conversation_history)
+                                            run_llm_and_tts(text, websocket, tts_provider, piper_voice_path, length_scale, task_manager, conversation_history, turn_start)
                                         )
                                     else:
                                         print(f"User (Gladia Partial): {text}") # Print partials
@@ -723,8 +745,9 @@ async def audio_stream(websocket: WebSocket, token: str = Query(None), tts_provi
                                         full_text = silence_manager.flush()
                                         if full_text:
                                             print("Deepgram Final -> Triggering LLM")
+                                            turn_start = time.time()
                                             await task_manager.schedule_llm_task(
-                                                run_llm_and_tts(full_text, websocket, tts_provider, piper_voice_path, length_scale, task_manager, conversation_history)
+                                                run_llm_and_tts(full_text, websocket, tts_provider, piper_voice_path, length_scale, task_manager, conversation_history, turn_start)
                                             )
                                     else:
                                         print(f"User (Deepgram Partial): {sentence}")
@@ -738,8 +761,9 @@ async def audio_stream(websocket: WebSocket, token: str = Query(None), tts_provi
                                 text = silence_manager.flush() # This cleans the buffer
                                 if text:
                                     logger.info("Deepgram UtteranceEnd -> Triggering LLM")
+                                    turn_start = time.time()
                                     await task_manager.schedule_llm_task(
-                                        run_llm_and_tts(text, websocket, tts_provider, piper_voice_path, length_scale, task_manager, conversation_history)
+                                        run_llm_and_tts(text, websocket, tts_provider, piper_voice_path, length_scale, task_manager, conversation_history, turn_start)
                                     )
 
                     except Exception as e:
